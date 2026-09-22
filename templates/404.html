@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}404 — Ledger{% endblock %}
+
+{% block content %}
+<div class="card p-5 text-center">
+    <h1 style="font-size: 5rem; font-weight: 800; color: #4f46e5;">404</h1>
+    <p class="lead mb-4">That page doesn't exist.</p>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-primary">Back to Dashboard</a>
+</div>
+{% endblock %}

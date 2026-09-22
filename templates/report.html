@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Monthly Report — Ledger{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">📈 Monthly Report</h1>
+<p class="text-muted">Comparing <strong>{{ this_label }}</strong> vs <strong>{{ prev_label }}</strong></p>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card p-4">
+            <h5 class="mb-3">{{ this_label }}</h5>
+            <div class="d-flex justify-content-between"><span>Income</span><strong class="text-success">+{{ "%.2f"|format(this_inc) }}</strong></div>
+            <div class="d-flex justify-content-between"><span>Expenses</span><strong class="text-danger">−{{ "%.2f"|format(this_exp) }}</strong></div>
+            <hr>
+            <div class="d-flex justify-content-between fs-5">
+                <span>Net</span>
+                <strong class="{% if this_net >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if this_net >= 0 %}+{% else %}−{% endif %}{{ "%.2f"|format(this_net|abs) }}
+                </strong>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card p-4">
+            <h5 class="mb-3">{{ prev_label }}</h5>
+            <div class="d-flex justify-content-between"><span>Income</span><strong class="text-success">+{{ "%.2f"|format(prev_inc) }}</strong></div>
+            <div class="d-flex justify-content-between"><span>Expenses</span><strong class="text-danger">−{{ "%.2f"|format(prev_exp) }}</strong></div>
+            <hr>
+            <div class="d-flex justify-content-between fs-5">
+                <span>Net</span>
+                <strong class="{% if prev_net >= 0 %}text-success{% else %}text-danger{% endif %}">
+                    {% if prev_net >= 0 %}+{% else %}−{% endif %}{{ "%.2f"|format(prev_net|abs) }}
+                </strong>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if comparison %}
+<div class="card">
+    <div class="card-header bg-transparent">
+        <h5 class="mb-0">Category breakdown</h5>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Category</th>
+                    <th class="text-end">{{ this_label }}</th>
+                    <th class="text-end">{{ prev_label }}</th>
+                    <th class="text-end">Δ Change</th>
+                    <th class="text-end">%</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in comparison %}
+                <tr>
+                    <td>{{ r.name }}</td>
+                    <td class="text-end">{{ "%.2f"|format(r.this) }}</td>
+                    <td class="text-end text-muted">{{ "%.2f"|format(r.prev) }}</td>
+                    <td class="text-end {% if r.delta > 0 %}text-danger{% elif r.delta < 0 %}text-success{% endif %}">
+                        {% if r.delta > 0 %}+{% endif %}{{ "%.2f"|format(r.delta) }}
+                    </td>
+                    <td class="text-end {% if r.delta > 0 %}text-danger{% elif r.delta < 0 %}text-success{% endif %}">
+                        {% if r.pct is none %}—{% else %}{% if r.pct > 0 %}+{% endif %}{{ "%.1f"|format(r.pct) }}%{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card p-5 text-center">
+    <p class="lead text-muted mb-0">No expense data in either month yet.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Categories — Ledger{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="mb-0">⚙️ Categories</h1>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">← Dashboard</a>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">Add a new category</h5>
+    <form method="POST" action="{{ url_for('add_category') }}" class="row g-2 align-items-end" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="col-md-4">
+            <label class="form-label small mb-1">{{ form.name.label.text }}</label>
+            {{ form.name(class="form-control", maxlength="50") }}
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ form.kind.label.text }}</label>
+            {{ form.kind(class="form-select") }}
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ form.monthly_budget.label.text }}</label>
+            {{ form.monthly_budget(class="form-control", step="0.01", min="0", placeholder="e.g. 500") }}
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">+ Add</button>
+        </div>
+    </form>
+</div>
+
+{% if categories %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Name</th><th>Type</th><th>Monthly Budget</th>
+                    <th class="text-end" style="width: 180px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in categories %}
+                <tr>
+                    <form method="POST" action="{{ url_for('update_category', cat_id=c.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <td><input type="text" name="name" value="{{ c.name }}" class="form-control form-control-sm" required></td>
+                        <td>
+                            <select name="kind" class="form-select form-select-sm">
+                                <option value="expense" {% if c.kind == 'expense' %}selected{% endif %}>Expense</option>
+                                <option value="income" {% if c.kind == 'income' %}selected{% endif %}>Income</option>
+                            </select>
+                        </td>
+                        <td>
+                            <input type="number" name="monthly_budget" step="0.01" min="0"
+                                   value="{{ c.monthly_budget or '' }}" class="form-control form-control-sm" placeholder="none">
+                        </td>
+                        <td class="text-end">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Save">💾</button>
+                    </form>
+                            <form method="POST" action="{{ url_for('delete_category', cat_id=c.id) }}" class="d-inline"
+                                  onsubmit="return confirm('Delete category \'{{ c.name }}\'?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">🗑️</button>
+                            </form>
+                        </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card p-5 text-center">
+    <p class="lead text-muted mb-0">No categories yet. Add one above!</p>
+</div>
+{% endif %}
+{% endblock %}

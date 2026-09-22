@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Ledger{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="mb-0">👋 Welcome, {{ current_user.username }}</h1>
+    <div>
+        <a href="{{ url_for('list_categories') }}" class="btn btn-outline-secondary">⚙️ Categories</a>
+        <a href="{{ url_for('add_expense') }}" class="btn btn-primary">+ Add Entry</a>
+    </div>
+</div>
+
+<!-- Filter bar -->
+<div class="card p-3 mb-4">
+    <form method="GET" class="row g-2 align-items-end">
+        <div class="col-md-2">
+            <label class="form-label small mb-1">From</label>
+            <input type="date" name="start" class="form-control form-control-sm" value="{{ filters.start_str }}">
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">To</label>
+            <input type="date" name="end" class="form-control form-control-sm" value="{{ filters.end_str }}">
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">Category</label>
+            <select name="category" class="form-select form-select-sm">
+                <option value="">All</option>
+                {% for c in all_categories %}
+                    <option value="{{ c.name }}" {% if filters.category == c.name %}selected{% endif %}>{{ c.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">Type</label>
+            <select name="kind" class="form-select form-select-sm">
+                <option value="">All</option>
+                <option value="expense" {% if filters.kind == 'expense' %}selected{% endif %}>Expense</option>
+                <option value="income" {% if filters.kind == 'income' %}selected{% endif %}>Income</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">Search</label>
+            <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="description...">
+        </div>
+        <div class="col-md-2 d-flex gap-2">
+            <button type="submit" class="btn btn-primary btn-sm flex-fill">Filter</button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
+        </div>
+    </form>
+
+    <div class="mt-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span class="text-muted small">
+            {{ total_entries }} entr{{ 'y' if total_entries == 1 else 'ies' }}
+            between {{ filters.start_str }} and {{ filters.end_str }}
+        </span>
+        <a href="{{ url_for('export_csv', start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}"
+           class="btn btn-sm btn-outline-success">📥 Export CSV</a>
+    </div>
+</div>
+
+<!-- Summary cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="text-muted small">Total Income</div>
+            <div class="fs-3 fw-bold text-success">+{{ "%.2f"|format(summary.total_income) }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="text-muted small">Total Expenses</div>
+            <div class="fs-3 fw-bold text-danger">−{{ "%.2f"|format(summary.total_expense) }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="text-muted small">Net Balance</div>
+            <div class="fs-3 fw-bold {% if summary.net >= 0 %}text-success{% else %}text-danger{% endif %}">
+                {% if summary.net >= 0 %}+{% else %}−{% endif %}{{ "%.2f"|format(summary.net|abs) }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick stats strip -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card p-3">
+            <div class="text-muted small">Entries in period</div>
+            <div class="fs-5 fw-semibold">{{ summary.quick.count }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card p-3">
+            <div class="text-muted small">Average expense</div>
+            <div class="fs-5 fw-semibold">{{ "%.2f"|format(summary.quick.avg_expense) }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card p-3">
+            <div class="text-muted small">Biggest expense</div>
+            <div class="fs-5 fw-semibold">{{ "%.2f"|format(summary.quick.biggest) }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card p-3">
+            <div class="text-muted small">Days in range</div>
+            <div class="fs-5 fw-semibold">{{ (filters.end - filters.start).days + 1 }}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Budget progress -->
+{% if summary.budget_progress %}
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">📊 Budget Progress — {{ summary.month_label }}</h5>
+    {% for b in summary.budget_progress %}
+    <div class="mb-3">
+        <div class="d-flex justify-content-between small">
+            <span><strong>{{ b.name }}</strong></span>
+            <span class="text-muted">
+                {% if b.budget %}
+                    {{ "%.2f"|format(b.spent) }} / {{ "%.2f"|format(b.budget) }}
+                    {% if b.over %}<span class="badge bg-danger ms-2">Over by {{ "%.2f"|format(b.spent - b.budget) }}</span>{% endif %}
+                {% else %}
+                    {{ "%.2f"|format(b.spent) }} spent · <em>no budget</em>
+                {% endif %}
+            </span>
+        </div>
+        {% if b.budget %}
+        <div class="progress mt-1" style="height: 8px;">
+            <div class="progress-bar {% if b.status == 'over' %}bg-danger{% elif b.status == 'warn' %}bg-warning{% else %}bg-success{% endif %}"
+                 style="width: {{ b.pct }}%;"></div>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Charts -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-5">
+        <div class="card p-3">
+            <h5 class="mb-3">Expenses by Category</h5>
+            {% if summary.pie.labels %}
+                <canvas id="pieChart" height="220"></canvas>
+            {% else %}
+                <p class="text-muted text-center py-5 mb-0">No expense data for this period.</p>
+            {% endif %}
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card p-3">
+            <h5 class="mb-3">Daily Expenses</h5>
+            <canvas id="barChart" height="150"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Entries table -->
+{% if expenses %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Category</th>
+                    <th>Description</th>
+                    <th class="text-end">Amount</th>
+                    <th class="text-end" style="width: 120px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for e in expenses %}
+                <tr>
+                    <td>{{ e.date.strftime('%Y-%m-%d') }}</td>
+                    <td>
+                        {% if e.kind == 'income' %}
+                            <span class="badge bg-success">Income</span>
+                        {% else %}
+                            <span class="badge bg-danger">Expense</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ e.category }}</td>
+                    <td>{{ e.description or '—' }}</td>
+                    <td class="text-end fw-bold {% if e.kind == 'income' %}text-success{% else %}text-danger{% endif %}">
+                        {% if e.kind == 'income' %}+{% else %}−{% endif %}{{ "%.2f"|format(e.amount) }}
+                    </td>
+                    <td class="text-end">
+                        <a href="{{ url_for('edit_expense', expense_id=e.id) }}"
+                           class="btn btn-sm btn-outline-secondary" title="Edit">✏️</a>
+                        <form method="POST" action="{{ url_for('delete_expense', expense_id=e.id) }}"
+                              class="d-inline"
+                              onsubmit="return confirm('Delete this entry?');">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">🗑️</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="card-footer d-flex justify-content-between align-items-center">
+        <span class="text-muted small">Page {{ page }} of {{ total_pages }}</span>
+        <nav>
+            <ul class="pagination pagination-sm mb-0">
+                <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                    <a class="page-link"
+                       href="{{ url_for('dashboard', page=page-1, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">← Prev</a>
+                </li>
+                {% for p in range(1, total_pages + 1) %}
+                    {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
+                        <li class="page-item {% if p == page %}active{% endif %}">
+                            <a class="page-link"
+                               href="{{ url_for('dashboard', page=p, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">{{ p }}</a>
+                        </li>
+                    {% elif p == 2 or p == total_pages - 1 %}
+                        <li class="page-item disabled"><span class="page-link">…</span></li>
+                    {% endif %}
+                {% endfor %}
+                <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                    <a class="page-link"
+                       href="{{ url_for('dashboard', page=page+1, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">Next →</a>
+                </li>
+            </ul>
+        </nav>
+    </div>
+    {% endif %}
+</div>
+{% else %}
+<div class="card p-5 text-center">
+    <p class="lead text-muted mb-3">No entries match these filters.</p>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Reset filters</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+    const pieData = {{ summary.pie | tojson }};
+    const barData = {{ summary.bar | tojson }};
+    const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+    const labelColor = isDark ? '#e5e7eb' : '#666';
+
+    window.__charts = [];
+
+    const pieEl = document.getElementById('pieChart');
+    if (pieEl && pieData.labels.length > 0) {
+        const c = new Chart(pieEl, {
+            type: 'doughnut',
+            data: {
+                labels: pieData.labels,
+                datasets: [{
+                    data: pieData.values,
+                    backgroundColor: ['#4f46e5','#f59e0b','#ef4444','#10b981','#3b82f6','#8b5cf6','#ec4899','#14b8a6'],
+                    borderWidth: 2, borderColor: isDark ? '#1f2937' : '#fff'
+                }]
+            },
+            options: {
+                plugins: { legend: { position: 'bottom', labels: { color: labelColor } } },
+                cutout: '55%'
+            }
+        });
+        window.__charts.push(c);
+    }
+
+    const barEl = document.getElementById('barChart');
+    if (barEl) {
+        const c = new Chart(barEl, {
+            type: 'bar',
+            data: {
+                labels: barData.labels,
+                datasets: [{ label: 'Daily Expenses', data: barData.values, backgroundColor: '#4f46e5', borderRadius: 4 }]
+            },
+            options: {
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, color: labelColor } },
+                    y: { beginAtZero: true, ticks: { color: labelColor } }
+                }
+            }
+        });
+        window.__charts.push(c);
+    }
+</script>
+{% endblock %}

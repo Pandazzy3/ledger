@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Recurring — Ledger{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">🔁 Recurring Transactions</h1>
+
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">Add a recurring rule</h5>
+    <form method="POST" action="{{ url_for('add_recurring') }}" class="row g-2 align-items-end" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ form.kind.label.text }}</label>
+            {{ form.kind(class="form-select") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ form.amount.label.text }}</label>
+            {{ form.amount(class="form-control", step="0.01", min="0.01") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ form.category.label.text }}</label>
+            {{ form.category(class="form-control", list="cat-list") }}
+            <datalist id="cat-list">
+                {% for c in categories %}<option value="{{ c.name }}">{% endfor %}
+            </datalist>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ form.description.label.text }}</label>
+            {{ form.description(class="form-control", maxlength="200") }}
+        </div>
+        <div class="col-md-1">
+            <label class="form-label small mb-1">Day</label>
+            {{ form.day_of_month(class="form-control", min="1", max="28") }}
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">+ Add Rule</button>
+        </div>
+    </form>
+    <p class="text-muted small mb-0 mt-2">Rules auto-post on the chosen day of each month. Day must be 1–28.</p>
+</div>
+
+{% if rules %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Type</th><th>Amount</th><th>Category</th><th>Description</th>
+                    <th>Day</th><th>Last Posted</th><th>Status</th><th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rules %}
+                <tr>
+                    <td>{% if r.kind == 'income' %}<span class="badge bg-success">Income</span>
+                        {% else %}<span class="badge bg-danger">Expense</span>{% endif %}</td>
+                    <td class="fw-bold">{{ "%.2f"|format(r.amount) }}</td>
+                    <td>{{ r.category }}</td>
+                    <td>{{ r.description or '—' }}</td>
+                    <td>Day {{ r.day_of_month }}</td>
+                    <td>{{ r.last_posted_month or '—' }}</td>
+                    <td>{% if r.active %}<span class="badge bg-primary">Active</span>
+                        {% else %}<span class="badge bg-secondary">Paused</span>{% endif %}</td>
+                    <td class="text-end">
+                        <form method="POST" action="{{ url_for('toggle_recurring', rule_id=r.id) }}" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button class="btn btn-sm btn-outline-secondary">{{ '⏸️' if r.active else '▶️' }}</button>
+                        </form>
+                        <form method="POST" action="{{ url_for('delete_recurring', rule_id=r.id) }}" class="d-inline"
+                              onsubmit="return confirm('Delete this rule?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button class="btn btn-sm btn-outline-danger">🗑️</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card p-5 text-center">
+    <p class="lead text-muted mb-0">No recurring rules yet. Add one above.</p>
+</div>
+{% endif %}
+{% endblock %}
