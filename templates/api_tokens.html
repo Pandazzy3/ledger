@@ -7,6 +7,18 @@
     <a href="{{ url_for('api_docs') }}" class="btn btn-outline-secondary">API Docs →</a>
 </div>
 
+{# Show the newly-created token prominently #}
+{% if new_token_value %}
+<div class="card p-4 mb-4 border-success" style="border-width: 2px;">
+    <h5 class="text-success mb-3">✅ New token created</h5>
+    <p class="mb-2 text-muted small">Copy this now — you can also view it later on this page.</p>
+    <div class="input-group mb-2">
+        <input type="text" id="newToken" class="form-control font-monospace" value="{{ new_token_value }}" readonly>
+        <button class="btn btn-success" type="button" onclick="copyToken('newToken', this)">📋 Copy</button>
+    </div>
+</div>
+{% endif %}
+
 <div class="card p-4 mb-4">
     <h5 class="mb-3">Create a new token</h5>
     <form method="POST" class="row g-2 align-items-end">
@@ -27,15 +39,28 @@
     <div class="table-responsive">
         <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
-                <tr><th>Name</th><th>Token</th><th>Created</th><th>Last Used</th><th class="text-end">Actions</th></tr>
+                <tr>
+                    <th>Name</th>
+                    <th style="width: 50%;">Token</th>
+                    <th>Created</th>
+                    <th>Last Used</th>
+                    <th class="text-end">Actions</th>
+                </tr>
             </thead>
             <tbody>
                 {% for t in tokens %}
                 <tr>
                     <td>{{ t.name or '—' }}</td>
-                    <td><code>{{ t.token[:12] }}…{{ t.token[-6:] }}</code></td>
-                    <td>{{ t.created_at.strftime('%Y-%m-%d') }}</td>
-                    <td>{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') if t.last_used_at else '—' }}</td>
+                    <td>
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="tok-{{ t.id }}" class="form-control font-monospace"
+                                   value="{{ t.token }}" readonly style="font-size: 0.75rem;">
+                            <button class="btn btn-outline-secondary" type="button"
+                                    onclick="copyToken('tok-{{ t.id }}', this)" title="Copy">📋</button>
+                        </div>
+                    </td>
+                    <td class="text-nowrap">{{ t.created_at.strftime('%Y-%m-%d') }}</td>
+                    <td class="text-nowrap">{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') if t.last_used_at else '—' }}</td>
                     <td class="text-end">
                         <form method="POST" action="{{ url_for('delete_api_token', token_id=t.id) }}"
                               class="d-inline" onsubmit="return confirm('Revoke this token?');">
@@ -56,6 +81,24 @@
 {% endif %}
 
 <div class="alert alert-warning mt-4" role="alert">
-    <strong>⚠️ Security note:</strong> The full token is only shown once (in the flash message after creation). If you lose it, revoke and create a new one.
+    <strong>⚠️ Keep tokens secret.</strong> Treat them like passwords. If a token ever leaks (screenshot, chat, GitHub), revoke it here and create a new one.
 </div>
+
+<script>
+function copyToken(inputId, btn) {
+    const input = document.getElementById(inputId);
+    input.select();
+    input.setSelectionRange(0, 99999);  // for mobile
+    navigator.clipboard.writeText(input.value).then(() => {
+        const original = btn.innerHTML;
+        btn.innerHTML = '✅ Copied';
+        setTimeout(() => { btn.innerHTML = original; }, 1500);
+    }).catch(() => {
+        // Fallback for older browsers
+        document.execCommand('copy');
+        btn.innerHTML = '✅ Copied';
+        setTimeout(() => { btn.innerHTML = '📋'; }, 1500);
+    });
+}
+</script>
 {% endblock %}

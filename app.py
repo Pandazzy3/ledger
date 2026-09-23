@@ -741,16 +741,24 @@ def settings():
 @app.route("/api/tokens", methods=["GET", "POST"])
 @login_required
 def api_tokens():
+    new_token_value = None  # We'll pass this to the template only on creation
+
     if request.method == "POST":
         name = request.form.get("name", "").strip() or "Unnamed"
-        token = ApiToken(user_id=current_user.id, token=ApiToken.generate(), name=name)
+        token_value = ApiToken.generate()
+        token = ApiToken(user_id=current_user.id, token=token_value, name=name)
         db.session.add(token)
         db.session.commit()
-        flash(f"Token '{name}' created. Copy it now — you won't see it again.", "success")
-        return redirect(url_for("api_tokens"))
-    tokens = ApiToken.query.filter_by(user_id=current_user.id).order_by(ApiToken.created_at.desc()).all()
-    return render_template("api_tokens.html", tokens=tokens)
+        new_token_value = token_value
+        flash(f"Token '{name}' created. Copy it below.", "success")
+        # Fall through to render the page with the new token visible once
 
+    tokens = ApiToken.query.filter_by(user_id=current_user.id).order_by(ApiToken.created_at.desc()).all()
+    return render_template(
+        "api_tokens.html",
+        tokens=tokens,
+        new_token_value=new_token_value,
+    )
 
 @app.route("/api/tokens/<int:token_id>/delete", methods=["POST"])
 @login_required
