@@ -13,6 +13,8 @@ from flask import (
     Flask, render_template, redirect, url_for, flash, request,
     jsonify, Response, abort,
 )
+from flask_wtf import FlaskForm
+from flask_wtf.csrf import CSRFProtect
 from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user,
 )
@@ -36,6 +38,8 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["WTF_CSRF_ENABLED"] = True
 
 db.init_app(app)
+csrf = CSRFProtect()
+csrf.init_app(app)
 
 login_manager = LoginManager()
 login_manager.init_app(app)
