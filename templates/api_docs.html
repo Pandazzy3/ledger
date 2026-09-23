@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}API Docs — Ledger{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">🔌 Ledger REST API</h1>
+<p class="text-muted">Use these endpoints to integrate Ledger with your own scripts, mobile apps, or tools.</p>
+
+<div class="card p-4 mb-4">
+    <h5>Authentication</h5>
+    <p class="mb-2">Create a token on the <a href="{{ url_for('api_tokens') }}">API Tokens</a> page, then include it in every request:</p>
+    <pre class="bg-light p-2 rounded mb-0"><code>Authorization: Bearer &lt;your-token&gt;</code></pre>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5>Endpoints</h5>
+    <table class="table table-sm mt-3">
+        <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+        <tbody>
+            <tr><td><span class="badge bg-success">GET</span></td><td><code>/api/v1/me</code></td><td>Current user info</td></tr>
+            <tr><td><span class="badge bg-success">GET</span></td><td><code>/api/v1/expenses</code></td><td>List expenses (supports <code>start</code>, <code>end</code>, <code>category</code>, <code>kind</code>)</td></tr>
+            <tr><td><span class="badge bg-primary">POST</span></td><td><code>/api/v1/expenses</code></td><td>Create an expense or income entry</td></tr>
+            <tr><td><span class="badge bg-success">GET</span></td><td><code>/api/v1/expenses/&lt;id&gt;</code></td><td>Get one entry</td></tr>
+            <tr><td><span class="badge bg-warning text-dark">PUT</span></td><td><code>/api/v1/expenses/&lt;id&gt;</code></td><td>Update an entry</td></tr>
+            <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/v1/expenses/&lt;id&gt;</code></td><td>Delete an entry</td></tr>
+            <tr><td><span class="badge bg-success">GET</span></td><td><code>/api/v1/categories</code></td><td>List categories</td></tr>
+            <tr><td><span class="badge bg-success">GET</span></td><td><code>/api/v1/summary</code></td><td>Totals + charts data (supports <code>start</code>, <code>end</code>)</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5>Example: list expenses from the last 7 days</h5>
+    <pre class="bg-light p-2 rounded mb-0"><code>curl -H "Authorization: Bearer YOUR_TOKEN" \
+  "https://Pandazzy3.pythonanywhere.com/api/v1/expenses?start=$(date -d '7 days ago' +%Y-%m-%d)"</code></pre>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5>Example: create an expense</h5>
+    <pre class="bg-light p-2 rounded mb-0"><code>curl -X POST "https://Pandazzy3.pythonanywhere.com/api/v1/expenses" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"kind":"expense","amount":12.50,"category":"Food","description":"Lunch","date":"2026-09-23"}'</code></pre>
+</div>
+
+<div class="card p-4">
+    <h5>Manage tokens</h5>
+    <p class="mb-2"><a href="{{ url_for('api_tokens') }}" class="btn btn-primary">Go to API Tokens →</a></p>
+</div>
+{% endblock %}

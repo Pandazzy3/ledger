@@ -11,10 +11,8 @@ import csv
 from dotenv import load_dotenv
 from flask import (
     Flask, render_template, redirect, url_for, flash, request,
-    jsonify, Response, abort,
+    jsonify, Response, abort, g,
 )
-from flask_wtf import FlaskForm
-from flask_wtf.csrf import CSRFProtect
 from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user,
 )
@@ -22,12 +20,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func
 
 from models import (
-    db, User, Category, Expense, RecurringRule, SavingsGoal, AlertLog,
+    db, User, Category, Expense, RecurringRule, SavingsGoal, AlertLog, ApiToken,
 )
 from forms import (
     RegisterForm, LoginForm, ExpenseForm, CategoryForm,
     RecurringForm, GoalForm, SettingsForm,
 )
+from api_auth import require_token
 
 load_dotenv()
 
@@ -38,6 +37,8 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["WTF_CSRF_ENABLED"] = True
 
 db.init_app(app)
+
+from flask_wtf.csrf import CSRFProtect
 csrf = CSRFProtect()
 csrf.init_app(app)
 
@@ -53,23 +54,16 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
-# ---------------- EMAIL HELPER ----------------
+# ---------------- EMAIL ----------------
 
 def send_alert_email(to_email, username, category, spent, budget, threshold):
-    """Send an over-budget alert email.
-
-    Uses SMTP credentials from environment variables. If they aren't set,
-    we just log the alert to the console (useful for local dev).
-    """
     subject = f"⚠️ Ledger alert: {category} budget at {threshold}%"
     body = (
         f"Hi {username},\n\n"
         f"Heads up — your spending in '{category}' has reached {spent:.2f}, "
         f"which is {threshold}% or more of your {budget:.2f} monthly budget.\n\n"
-        f"Log in to Ledger to review your spending.\n\n"
-        f"— Ledger"
+        f"Log in to Ledger to review your spending.\n\n— Ledger"
     )
-
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
     smtp_user = os.environ.get("SMTP_USER")
@@ -78,13 +72,11 @@ def send_alert_email(to_email, username, category, spent, budget, threshold):
     if not all([smtp_host, smtp_user, smtp_pass]):
         print(f"[ALERT - no SMTP configured] {to_email}: {subject}")
         return
-
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = smtp_user
     msg["To"] = to_email
     msg.set_content(body)
-
     context = ssl.create_default_context()
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as server:
@@ -97,7 +89,6 @@ def send_alert_email(to_email, username, category, spent, budget, threshold):
 
 
 def check_budget_alerts(user):
-    """Check all expense categories for threshold breaches; send emails."""
     if not user.email_alerts:
         return
     today = date.today()
@@ -108,19 +99,15 @@ def check_budget_alerts(user):
     cats = Category.query.filter_by(user_id=user.id, kind="expense").all()
     if not cats:
         return
-
     spent_rows = (
         db.session.query(Expense.category, func.sum(Expense.amount))
         .filter(
-            Expense.user_id == user.id,
-            Expense.kind == "expense",
-            Expense.date >= month_start,
-            Expense.date <= month_end,
+            Expense.user_id == user.id, Expense.kind == "expense",
+            Expense.date >= month_start, Expense.date <= month_end,
         )
         .group_by(Expense.category).all()
     )
     spent_map = {r[0]: float(r[1]) for r in spent_rows}
-
     threshold = user.alert_threshold or 80
 
     for c in cats:
@@ -130,15 +117,12 @@ def check_budget_alerts(user):
         pct = spent / c.monthly_budget * 100.0
         if pct < threshold:
             continue
-
-        # Dedup: only one alert per (user, category, month, threshold)
         already = AlertLog.query.filter_by(
             user_id=user.id, category=c.name,
             month=current_month, threshold=threshold,
         ).first()
         if already:
             continue
-
         send_alert_email(user.email, user.username, c.name, spent, c.monthly_budget, threshold)
         db.session.add(AlertLog(
             user_id=user.id, category=c.name,
@@ -153,30 +137,23 @@ def parse_filters():
     today = date.today()
     default_start = today - timedelta(days=29)
     default_end = today
-
     start_str = request.args.get("start", default_start.isoformat())
     end_str = request.args.get("end", default_end.isoformat())
     category = request.args.get("category", "").strip()
     kind = request.args.get("kind", "").strip()
     q = request.args.get("q", "").strip()
-
     try:
         start = datetime.strptime(start_str, "%Y-%m-%d").date()
     except ValueError:
-        start = default_start
-        start_str = default_start.isoformat()
+        start = default_start; start_str = default_start.isoformat()
     try:
         end = datetime.strptime(end_str, "%Y-%m-%d").date()
     except ValueError:
-        end = default_end
-        end_str = default_end.isoformat()
-
+        end = default_end; end_str = default_end.isoformat()
     if kind not in ("expense", "income"):
         kind = ""
-
     return {
-        "start": start, "end": end,
-        "start_str": start_str, "end_str": end_str,
+        "start": start, "end": end, "start_str": start_str, "end_str": end_str,
         "category": category, "kind": kind, "q": q,
     }
 
@@ -199,17 +176,14 @@ def apply_filters(query, user_id, filters):
 def run_recurring_for_user(user_id):
     today = date.today()
     current_month = today.strftime("%Y-%m")
-
     rules = RecurringRule.query.filter_by(user_id=user_id, active=True).all()
     posted = 0
-
     for rule in rules:
         if rule.last_posted_month == current_month:
             continue
         if today.day < rule.day_of_month:
             continue
         day = min(rule.day_of_month, today.day)
-
         existing = Expense.query.filter_by(
             user_id=user_id, recurring_id=rule.id,
         ).filter(func.strftime("%Y-%m", Expense.date) == current_month).first()
@@ -217,7 +191,6 @@ def run_recurring_for_user(user_id):
             rule.last_posted_month = current_month
             db.session.commit()
             continue
-
         db.session.add(Expense(
             user_id=user_id, kind=rule.kind, amount=rule.amount,
             category=rule.category,
@@ -226,7 +199,6 @@ def run_recurring_for_user(user_id):
         ))
         rule.last_posted_month = current_month
         posted += 1
-
     if posted:
         db.session.commit()
     return posted
@@ -242,7 +214,6 @@ def build_summary(user_id, filters):
         .filter(Expense.kind == "expense").scalar()
     )
     net = total_income - total_expense
-
     by_cat = (
         apply_filters(db.session.query(Expense.category, func.sum(Expense.amount)), user_id, filters)
         .filter(Expense.kind == "expense")
@@ -251,16 +222,13 @@ def build_summary(user_id, filters):
     )
     pie_labels = [r[0] for r in by_cat]
     pie_values = [round(float(r[1]), 2) for r in by_cat]
-
     start = filters["start"]; end = filters["end"]
     span_days = max(1, (end - start).days + 1)
-
     daily = (
         apply_filters(db.session.query(Expense.date, func.sum(Expense.amount)), user_id, filters)
         .filter(Expense.kind == "expense").group_by(Expense.date).order_by(Expense.date).all()
     )
     daily_map = {r[0]: float(r[1]) for r in daily}
-
     if span_days > 90:
         cap_start = end - timedelta(days=89)
         bar_labels, bar_values = [], []
@@ -274,7 +242,6 @@ def build_summary(user_id, filters):
             d = start + timedelta(days=i)
             bar_labels.append(d.strftime("%m-%d"))
             bar_values.append(round(daily_map.get(d, 0.0), 2))
-
     total_entries = apply_filters(db.session.query(func.count(Expense.id)), user_id, filters).scalar() or 0
     avg_expense = (
         apply_filters(db.session.query(func.avg(Expense.amount)), user_id, filters)
@@ -284,11 +251,9 @@ def build_summary(user_id, filters):
         apply_filters(db.session.query(func.max(Expense.amount)), user_id, filters)
         .filter(Expense.kind == "expense").scalar()
     )
-
     today = date.today()
     month_start = today.replace(day=1)
     month_end = today.replace(day=monthrange(today.year, today.month)[1])
-
     categories = Category.query.filter_by(user_id=user_id).order_by(Category.name).all()
     spent_rows = (
         db.session.query(Expense.category, func.sum(Expense.amount))
@@ -299,7 +264,6 @@ def build_summary(user_id, filters):
         .group_by(Expense.category).all()
     )
     spent_map = {r[0]: float(r[1]) for r in spent_rows}
-
     budget_progress = []
     for c in categories:
         if c.kind != "expense":
@@ -318,7 +282,6 @@ def build_summary(user_id, filters):
                 "name": c.name, "budget": None, "spent": round(spent, 2),
                 "pct": 0, "remaining": None, "over": False, "status": "no-budget",
             })
-
     return {
         "total_income": round(float(total_income), 2),
         "total_expense": round(float(total_expense), 2),
@@ -335,11 +298,16 @@ def build_summary(user_id, filters):
     }
 
 
-# ---------------- PUBLIC ROUTES ----------------
+# ---------------- PUBLIC ----------------
 
 @app.route("/")
 def index():
     return render_template("index.html", user_count=User.query.count())
+
+
+@app.route("/api")
+def api_docs():
+    return render_template("api_docs.html")
 
 
 # ---------------- AUTH ----------------
@@ -362,7 +330,6 @@ def register():
             )
             db.session.add(u)
             db.session.commit()
-
             defaults = [
                 ("Food", "expense", None), ("Rent", "expense", None),
                 ("Transport", "expense", None), ("Utilities", "expense", None),
@@ -372,7 +339,6 @@ def register():
             for name, kind, budget in defaults:
                 db.session.add(Category(user_id=u.id, name=name, kind=kind, monthly_budget=budget))
             db.session.commit()
-
             flash("Account created! You can now log in.", "success")
             return redirect(url_for("login"))
     return render_template("register.html", form=form)
@@ -411,29 +377,24 @@ def logout():
 def dashboard():
     run_recurring_for_user(current_user.id)
     check_budget_alerts(current_user)
-
     filters = parse_filters()
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
         page = 1
     PER_PAGE = 10
-
     base_query = apply_filters(db.session.query(Expense), current_user.id, filters)
     total_entries = base_query.count()
     total_pages = max(1, (total_entries + PER_PAGE - 1) // PER_PAGE)
     if page > total_pages:
         page = total_pages
-
     entries = (
         base_query.order_by(Expense.date.desc(), Expense.id.desc())
         .offset((page - 1) * PER_PAGE).limit(PER_PAGE).all()
     )
-
     summary = build_summary(current_user.id, filters)
     all_categories = Category.query.filter_by(user_id=current_user.id).order_by(Category.name).all()
     goals = SavingsGoal.query.filter_by(user_id=current_user.id).order_by(SavingsGoal.created_at).all()
-
     return render_template(
         "dashboard.html",
         expenses=entries, summary=summary, filters=filters,
@@ -441,12 +402,6 @@ def dashboard():
         total_pages=total_pages, total_entries=total_entries,
         goals=goals,
     )
-
-
-@app.route("/api/summary")
-@login_required
-def api_summary():
-    return jsonify(build_summary(current_user.id, parse_filters()))
 
 
 # ---------------- CSV EXPORT ----------------
@@ -460,14 +415,18 @@ def export_csv():
         .order_by(Expense.date.desc(), Expense.id.desc()).all()
     )
     buf = StringIO()
-    buf.write("\ufeff")
+    buf.write("\ufeff")  # UTF-8 BOM for Excel
     writer = csv.writer(buf)
     writer.writerow(["Date", "Type", "Category", "Description", "Amount"])
     for e in entries:
-        writer.writerow([e.date.isoformat(), e.kind, e.category, e.description or "", f"{e.amount:.2f}"])
+        writer.writerow([
+            e.date.isoformat(), e.kind, e.category,
+            e.description or "", f"{e.amount:.2f}",
+        ])
     filename = f"ledger_{filters['start_str']}_to_{filters['end_str']}.csv"
     return Response(
-        buf.getvalue(), mimetype="text/csv",
+        buf.getvalue(),
+        mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -490,7 +449,6 @@ def add_expense():
         check_budget_alerts(current_user)
         flash(f"{form.kind.data.capitalize()} of {form.amount.data:.2f} added.", "success")
         return redirect(url_for("dashboard"))
-
     if not form.date.data:
         form.date.data = date.today()
     return render_template("add_expense.html", form=form)
@@ -503,7 +461,6 @@ def edit_expense(expense_id):
     if not expense or expense.user_id != current_user.id:
         flash("Entry not found.", "danger")
         return redirect(url_for("dashboard"))
-
     form = ExpenseForm(obj=expense)
     if form.validate_on_submit():
         expense.kind = form.kind.data
@@ -515,7 +472,6 @@ def edit_expense(expense_id):
         check_budget_alerts(current_user)
         flash("Entry updated.", "success")
         return redirect(url_for("dashboard"))
-
     return render_template("edit_expense.html", form=form, expense=expense)
 
 
@@ -552,8 +508,7 @@ def add_category():
         else:
             db.session.add(Category(
                 user_id=current_user.id, name=form.name.data.strip(),
-                kind=form.kind.data,
-                monthly_budget=form.monthly_budget.data,
+                kind=form.kind.data, monthly_budget=form.monthly_budget.data,
             ))
             db.session.commit()
             flash(f"Category '{form.name.data}' added.", "success")
@@ -569,7 +524,6 @@ def update_category(cat_id):
     if not cat or cat.user_id != current_user.id:
         flash("Category not found.", "danger")
         return redirect(url_for("list_categories"))
-
     form = CategoryForm()
     if form.validate_on_submit():
         cat.name = form.name.data.strip()
@@ -648,7 +602,7 @@ def delete_recurring(rule_id):
     return redirect(url_for("list_recurring"))
 
 
-# ---------------- SAVINGS GOALS ----------------
+# ---------------- GOALS ----------------
 
 @app.route("/goals")
 @login_required
@@ -683,7 +637,6 @@ def deposit_goal(goal_id):
     if not goal or goal.user_id != current_user.id:
         flash("Goal not found.", "danger")
         return redirect(url_for("list_goals"))
-
     amount_raw = request.form.get("amount", "").strip()
     try:
         amount = float(amount_raw)
@@ -692,7 +645,6 @@ def deposit_goal(goal_id):
     except ValueError:
         flash("Deposit amount must be positive.", "danger")
         return redirect(url_for("list_goals"))
-
     goal.current_amount += amount
     db.session.commit()
     flash(f"Deposited {amount:.2f} to '{goal.name}'.", "success")
@@ -726,18 +678,12 @@ def report():
     def totals(start, end):
         inc = (
             db.session.query(func.coalesce(func.sum(Expense.amount), 0.0))
-            .filter(
-                Expense.user_id == current_user.id, Expense.kind == "income",
-                Expense.date >= start, Expense.date <= end,
-            ).scalar() or 0.0
-        )
+            .filter(Expense.user_id == current_user.id, Expense.kind == "income",
+                    Expense.date >= start, Expense.date <= end).scalar() or 0.0)
         exp = (
             db.session.query(func.coalesce(func.sum(Expense.amount), 0.0))
-            .filter(
-                Expense.user_id == current_user.id, Expense.kind == "expense",
-                Expense.date >= start, Expense.date <= end,
-            ).scalar() or 0.0
-        )
+            .filter(Expense.user_id == current_user.id, Expense.kind == "expense",
+                    Expense.date >= start, Expense.date <= end).scalar() or 0.0)
         return round(float(inc), 2), round(float(exp), 2)
 
     this_inc, this_exp = totals(this_start, this_end)
@@ -746,23 +692,19 @@ def report():
     def by_category(start, end):
         rows = (
             db.session.query(Expense.category, func.sum(Expense.amount))
-            .filter(
-                Expense.user_id == current_user.id, Expense.kind == "expense",
-                Expense.date >= start, Expense.date <= end,
-            ).group_by(Expense.category).order_by(func.sum(Expense.amount).desc()).all()
+            .filter(Expense.user_id == current_user.id, Expense.kind == "expense",
+                    Expense.date >= start, Expense.date <= end)
+            .group_by(Expense.category).order_by(func.sum(Expense.amount).desc()).all()
         )
         return [(r[0], round(float(r[1]), 2)) for r in rows]
 
     this_cats = by_category(this_start, this_end)
     prev_cats = by_category(prev_start, prev_month_end)
-
-    prev_map = dict(prev_cats)
-    this_map = dict(this_cats)
+    prev_map = dict(prev_cats); this_map = dict(this_cats)
     all_names = sorted(set(this_map) | set(prev_map))
     comparison = []
     for name in all_names:
-        t = this_map.get(name, 0.0)
-        p = prev_map.get(name, 0.0)
+        t = this_map.get(name, 0.0); p = prev_map.get(name, 0.0)
         delta = round(t - p, 2)
         pct = round((delta / p * 100.0), 1) if p > 0 else None
         comparison.append({"name": name, "this": t, "prev": p, "delta": delta, "pct": pct})
@@ -790,25 +732,172 @@ def settings():
         db.session.commit()
         flash("Settings saved.", "success")
         return redirect(url_for("settings"))
-    # Pre-fill threshold selector
     form.alert_threshold.data = str(current_user.alert_threshold or 80)
     return render_template("settings.html", form=form)
+
+
+# ---------------- API TOKENS (web UI) ----------------
+
+@app.route("/api/tokens", methods=["GET", "POST"])
+@login_required
+def api_tokens():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip() or "Unnamed"
+        token = ApiToken(user_id=current_user.id, token=ApiToken.generate(), name=name)
+        db.session.add(token)
+        db.session.commit()
+        flash(f"Token '{name}' created. Copy it now — you won't see it again.", "success")
+        return redirect(url_for("api_tokens"))
+    tokens = ApiToken.query.filter_by(user_id=current_user.id).order_by(ApiToken.created_at.desc()).all()
+    return render_template("api_tokens.html", tokens=tokens)
+
+
+@app.route("/api/tokens/<int:token_id>/delete", methods=["POST"])
+@login_required
+def delete_api_token(token_id):
+    t = db.session.get(ApiToken, token_id)
+    if not t or t.user_id != current_user.id:
+        flash("Token not found.", "danger")
+        return redirect(url_for("api_tokens"))
+    db.session.delete(t)
+    db.session.commit()
+    flash("Token revoked.", "info")
+    return redirect(url_for("api_tokens"))
+
+
+# ---------------- REST API v1 ----------------
+
+@app.route("/api/v1/me", methods=["GET"])
+@require_token
+def api_me():
+    u = g.current_user
+    return jsonify({
+        "username": u.username,
+        "email": u.email,
+        "email_alerts": u.email_alerts,
+        "alert_threshold": u.alert_threshold,
+    })
+
+
+@app.route("/api/v1/expenses", methods=["GET", "POST"])
+@require_token
+def api_expenses():
+    user = g.current_user
+    if request.method == "GET":
+        query = Expense.query.filter_by(user_id=user.id)
+        start = request.args.get("start")
+        end = request.args.get("end")
+        if start:
+            try: query = query.filter(Expense.date >= datetime.strptime(start, "%Y-%m-%d").date())
+            except ValueError: pass
+        if end:
+            try: query = query.filter(Expense.date <= datetime.strptime(end, "%Y-%m-%d").date())
+            except ValueError: pass
+        cat = request.args.get("category")
+        if cat: query = query.filter(Expense.category == cat)
+        kind = request.args.get("kind")
+        if kind in ("expense", "income"): query = query.filter(Expense.kind == kind)
+        rows = query.order_by(Expense.date.desc(), Expense.id.desc()).limit(500).all()
+        return jsonify([e.to_dict() for e in rows])
+
+    data = request.get_json(silent=True) or {}
+    try:
+        amount = float(data.get("amount"))
+        if amount <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "amount must be a positive number"}), 400
+    try:
+        expense_date = datetime.strptime(data.get("date", ""), "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+    kind = data.get("kind", "expense")
+    if kind not in ("expense", "income"):
+        return jsonify({"error": "kind must be expense or income"}), 400
+
+    e = Expense(
+        user_id=user.id, kind=kind, amount=amount,
+        category=(data.get("category") or "Other").strip(),
+        description=(data.get("description") or "").strip(),
+        date=expense_date,
+    )
+    db.session.add(e)
+    db.session.commit()
+    check_budget_alerts(user)
+    return jsonify(e.to_dict()), 201
+
+
+@app.route("/api/v1/expenses/<int:expense_id>", methods=["GET", "PUT", "DELETE"])
+@require_token
+def api_expense_detail(expense_id):
+    user = g.current_user
+    e = db.session.get(Expense, expense_id)
+    if not e or e.user_id != user.id:
+        return jsonify({"error": "not found"}), 404
+
+    if request.method == "GET":
+        return jsonify(e.to_dict())
+
+    if request.method == "DELETE":
+        db.session.delete(e)
+        db.session.commit()
+        return jsonify({"deleted": True, "id": expense_id})
+
+    data = request.get_json(silent=True) or {}
+    if "kind" in data:
+        if data["kind"] not in ("expense", "income"):
+            return jsonify({"error": "invalid kind"}), 400
+        e.kind = data["kind"]
+    if "amount" in data:
+        try:
+            e.amount = float(data["amount"])
+            if e.amount <= 0: raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"error": "invalid amount"}), 400
+    if "category" in data:
+        e.category = (data["category"] or "Other").strip()
+    if "description" in data:
+        e.description = (data["description"] or "").strip()
+    if "date" in data:
+        try:
+            e.date = datetime.strptime(data["date"], "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "invalid date"}), 400
+    db.session.commit()
+    return jsonify(e.to_dict())
+
+
+@app.route("/api/v1/categories", methods=["GET"])
+@require_token
+def api_categories():
+    rows = Category.query.filter_by(user_id=g.current_user.id).order_by(Category.name).all()
+    return jsonify([c.to_dict() for c in rows])
+
+
+@app.route("/api/v1/summary", methods=["GET"])
+@require_token
+def api_summary():
+    filters = parse_filters()
+    return jsonify(build_summary(g.current_user.id, filters))
 
 
 # ---------------- ERROR HANDLERS ----------------
 
 @app.errorhandler(404)
 def not_found(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "not found"}), 404
     return render_template("404.html"), 404
 
 
 @app.errorhandler(500)
 def server_error(e):
     db.session.rollback()
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "internal server error"}), 500
     return render_template("500.html"), 500
 
 
-# Create the database tables on first run
 with app.app_context():
     db.create_all()
 

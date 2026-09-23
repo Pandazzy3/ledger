@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}API Tokens — Ledger{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="mb-0">🔑 API Tokens</h1>
+    <a href="{{ url_for('api_docs') }}" class="btn btn-outline-secondary">API Docs →</a>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">Create a new token</h5>
+    <form method="POST" class="row g-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="col-md-8">
+            <label class="form-label small mb-1">Token name</label>
+            <input type="text" name="name" class="form-control" placeholder="e.g. iPhone script" maxlength="100">
+        </div>
+        <div class="col-md-4">
+            <button type="submit" class="btn btn-primary w-100">Generate Token</button>
+        </div>
+    </form>
+    <p class="text-muted small mt-2 mb-0">Tokens act like passwords. Anyone with the token has full API access to your account.</p>
+</div>
+
+{% if tokens %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr><th>Name</th><th>Token</th><th>Created</th><th>Last Used</th><th class="text-end">Actions</th></tr>
+            </thead>
+            <tbody>
+                {% for t in tokens %}
+                <tr>
+                    <td>{{ t.name or '—' }}</td>
+                    <td><code>{{ t.token[:12] }}…{{ t.token[-6:] }}</code></td>
+                    <td>{{ t.created_at.strftime('%Y-%m-%d') }}</td>
+                    <td>{{ t.last_used_at.strftime('%Y-%m-%d %H:%M') if t.last_used_at else '—' }}</td>
+                    <td class="text-end">
+                        <form method="POST" action="{{ url_for('delete_api_token', token_id=t.id) }}"
+                              class="d-inline" onsubmit="return confirm('Revoke this token?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button class="btn btn-sm btn-outline-danger">Revoke</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card p-5 text-center">
+    <p class="lead text-muted mb-0">No tokens yet. Create one above.</p>
+</div>
+{% endif %}
+
+<div class="alert alert-warning mt-4" role="alert">
+    <strong>⚠️ Security note:</strong> The full token is only shown once (in the flash message after creation). If you lose it, revoke and create a new one.
+</div>
+{% endblock %}

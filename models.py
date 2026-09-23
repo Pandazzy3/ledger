@@ -1,6 +1,9 @@
 from datetime import datetime, date
+import secrets
+
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
 
 db = SQLAlchemy()
 
@@ -13,11 +16,32 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
     email_alerts = db.Column(db.Boolean, default=False, nullable=False)
-    alert_threshold = db.Column(db.Integer, default=80)  # 50, 80, or 100 (%)
+    alert_threshold = db.Column(db.Integer, default=80)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
         return f"<User {self.username}>"
+
+
+class ApiToken(db.Model):
+    """A long-lived token that lets scripts/apps authenticate."""
+    __tablename__ = "api_tokens"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    token = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(100), default="")  # e.g. "iPhone app"
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_used_at = db.Column(db.DateTime, nullable=True)
+
+    user = db.relationship("User", backref=db.backref("api_tokens", lazy=True, cascade="all, delete-orphan"))
+
+    @staticmethod
+    def generate():
+        return secrets.token_urlsafe(48)
+
+    def __repr__(self):
+        return f"<ApiToken {self.name or self.id}>"
 
 
 class Category(db.Model):
@@ -31,6 +55,14 @@ class Category(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     user = db.relationship("User", backref=db.backref("categories", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "monthly_budget": self.monthly_budget,
+        }
 
     def __repr__(self):
         return f"<Category {self.name} ({self.kind})>"
@@ -50,6 +82,17 @@ class Expense(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     user = db.relationship("User", backref=db.backref("expenses", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "amount": self.amount,
+            "category": self.category,
+            "description": self.description or "",
+            "date": self.date.isoformat(),
+            "recurring_id": self.recurring_id,
+        }
 
     def __repr__(self):
         return f"<Expense {self.kind} {self.amount} {self.category}>"
@@ -106,14 +149,13 @@ class SavingsGoal(db.Model):
 
 
 class AlertLog(db.Model):
-    """Tracks sent alerts so we don't spam the user."""
     __tablename__ = "alert_log"
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     category = db.Column(db.String(50), nullable=False)
-    month = db.Column(db.String(7), nullable=False)  # e.g. "2026-09"
-    threshold = db.Column(db.Integer, nullable=False)  # 80 or 100
+    month = db.Column(db.String(7), nullable=False)
+    threshold = db.Column(db.Integer, nullable=False)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
