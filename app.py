@@ -2,6 +2,7 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
+from flask import send_from_directory
 
 from datetime import date, datetime, timedelta
 from calendar import monthrange
@@ -402,7 +403,12 @@ def dashboard():
         total_pages=total_pages, total_entries=total_entries,
         goals=goals,
     )
-
+@app.route("/service-worker.js")
+def service_worker():
+    response = send_from_directory("static", "service-worker.js")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
 
 # ---------------- CSV EXPORT ----------------
 

@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="light">
 <head>
+    <link rel="manifest" href="/static/manifest.json">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#4f46e5">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Ledger{% endblock %}</title>
@@ -21,6 +24,15 @@
         .theme-toggle:hover { background: rgba(127,127,127,0.1); }
     </style>
 </head>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/service-worker.js", { scope: "/" })
+        .then((reg) => console.log("SW registered:", reg.scope))
+        .catch((err) => console.warn("SW failed:", err));
+    });
+  }
+</script>
 <body>
 
 <nav class="navbar navbar-expand-lg bg-dark mb-4" data-bs-theme="dark">
