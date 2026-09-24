@@ -1,28 +1,31 @@
 {% extends "base.html" %}
-{% block title %}Add Entry — Ledger{% endblock %}
+{% block title %}{{ t('add_an_entry') }} — {{ t('app_name') }}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-6">
         <div class="card p-4">
-            <h2 class="mb-4">Add an entry</h2>
+            <h2 class="mb-4">{{ t('add_an_entry') }}</h2>
 
             <form method="POST" novalidate>
                 {{ form.hidden_tag() }}
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.kind.label.text }}</label>
-                    {{ form.kind(class="form-select") }}
+                    <label class="form-label">{{ t('type') }}</label>
+                    <select name="kind" class="form-select">
+                        <option value="expense" {% if form.kind.data == 'expense' %}selected{% endif %}>{{ t('expense') }}</option>
+                        <option value="income" {% if form.kind.data == 'income' %}selected{% endif %}>{{ t('income') }}</option>
+                    </select>
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.amount.label.text }}</label>
+                    <label class="form-label">{{ t('amount') }} ({{ currency_code }})</label>
                     {{ form.amount(class="form-control", step="0.01", min="0.01", autofocus=true) }}
                     {% for err in form.amount.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.category.label.text }}</label>
+                    <label class="form-label">{{ t('category') }}</label>
                     {{ form.category(class="form-control", list="category-suggestions") }}
                     <datalist id="category-suggestions">
                         <option value="Food"><option value="Rent"><option value="Transport">
@@ -33,21 +36,21 @@
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.description.label.text }}</label>
+                    <label class="form-label">{{ t('description') }} <span class="text-muted">({{ t('optional') }})</span></label>
                     {{ form.description(class="form-control", maxlength="200") }}
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.date.label.text }}</label>
+                    <label class="form-label">{{ t('date') }}</label>
                     {{ form.date(class="form-control") }}
                     {% for err in form.date.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
                 </div>
 
-                {{ form.submit(class="btn btn-primary w-100") }}
+                {{ form.submit(class="btn btn-primary w-100", value=t('save')) }}
             </form>
 
             <p class="mt-3 text-center mb-0">
-                <a href="{{ url_for('dashboard') }}" class="text-muted">← Back to dashboard</a>
+                <a href="{{ url_for('dashboard') }}" class="text-muted">{{ t('back_to_dashboard') }}</a>
             </p>
         </div>
     </div>

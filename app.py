@@ -2,7 +2,6 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
-from flask import send_from_directory
 
 from datetime import date, datetime, timedelta
 from calendar import monthrange
@@ -12,7 +11,7 @@ import csv
 from dotenv import load_dotenv
 from flask import (
     Flask, render_template, redirect, url_for, flash, request,
-    jsonify, Response, abort, g,
+    jsonify, Response, g, send_from_directory,
 )
 from flask_login import (
     LoginManager, login_user, logout_user, login_required, current_user,
@@ -21,13 +20,21 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func
 
 from models import (
-    db, User, Category, Expense, RecurringRule, SavingsGoal, AlertLog, ApiToken,
+    db, User, Category, Expense, RecurringRule, SavingsGoal, AlertLog, ApiToken, AiChat,
 )
 from forms import (
     RegisterForm, LoginForm, ExpenseForm, CategoryForm,
     RecurringForm, GoalForm, SettingsForm,
 )
 from api_auth import require_token
+from ai_assistant import chat as ai_chat
+from translations import (
+    SUPPORTED_LANGUAGES, SUPPORTED_CURRENCIES,
+    get_currency_symbol, get_currency_name, get_language_name,
+)
+from exchange_rates import convert as convert_currency, fetch_rates
+from exchange_rates import convert as convert_currency, fetch_rates, fetch_history, build_rate_board
+from i18n import translate
 
 load_dotenv()
 
@@ -53,6 +60,56 @@ login_manager.login_message_category = "warning"
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+
+
+# ---------------- TEMPLATE FILTERS ----------------
+
+@app.template_filter("money")
+def money_filter(amount):
+    """Format an amount in the user's display currency, converting if needed."""
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        amount = 0.0
+
+    if not current_user.is_authenticated:
+        return f"${amount:,.2f}"
+
+    display = current_user.currency or "USD"
+    base = current_user.base_currency or "USD"
+    symbol = get_currency_symbol(display)
+
+    if display != base:
+        converted, _rate = convert_currency(amount, base, display)
+        if converted is not None:
+            amount = converted
+
+    if display in ("JPY", "KRW"):
+        return f"{symbol}{amount:,.0f}"
+    return f"{symbol}{amount:,.2f}"
+
+
+# ---------------- CONTEXT PROCESSOR ----------------
+
+@app.context_processor
+def inject_globals():
+    if not current_user.is_authenticated:
+        return {
+            "currency_symbol": "$",
+            "currency_code": "USD",
+            "user_api_token": "",
+            "t": lambda key, **kw: translate(key, "en", **kw),
+            "current_language": "en",
+        }
+    lang = current_user.language or "en"
+    token = ApiToken.query.filter_by(user_id=current_user.id).first()
+    return {
+        "currency_symbol": get_currency_symbol(current_user.currency),
+        "currency_code": current_user.currency or "USD",
+        "user_api_token": token.token if token else "",
+        "t": lambda key, **kw: translate(key, lang, **kw),
+        "current_language": lang,
+    }
 
 
 # ---------------- EMAIL ----------------
@@ -311,6 +368,14 @@ def api_docs():
     return render_template("api_docs.html")
 
 
+@app.route("/service-worker.js")
+def service_worker():
+    response = send_from_directory("static", "service-worker.js")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
+
+
 # ---------------- AUTH ----------------
 
 @app.route("/register", methods=["GET", "POST"])
@@ -403,12 +468,7 @@ def dashboard():
         total_pages=total_pages, total_entries=total_entries,
         goals=goals,
     )
-@app.route("/service-worker.js")
-def service_worker():
-    response = send_from_directory("static", "service-worker.js")
-    response.headers["Cache-Control"] = "no-cache"
-    response.headers["Service-Worker-Allowed"] = "/"
-    return response
+
 
 # ---------------- CSV EXPORT ----------------
 
@@ -421,13 +481,14 @@ def export_csv():
         .order_by(Expense.date.desc(), Expense.id.desc()).all()
     )
     buf = StringIO()
-    buf.write("\ufeff")  # UTF-8 BOM for Excel
+    buf.write("\ufeff")
     writer = csv.writer(buf)
-    writer.writerow(["Date", "Type", "Category", "Description", "Amount"])
+    writer.writerow(["Date", "Type", "Category", "Description", "Amount", "Currency"])
     for e in entries:
         writer.writerow([
             e.date.isoformat(), e.kind, e.category,
             e.description or "", f"{e.amount:.2f}",
+            current_user.base_currency or "USD",
         ])
     filename = f"ledger_{filters['start_str']}_to_{filters['end_str']}.csv"
     return Response(
@@ -732,14 +793,149 @@ def report():
 @login_required
 def settings():
     form = SettingsForm(obj=current_user)
+
+    form.language.choices = [(k, v) for k, v in SUPPORTED_LANGUAGES.items()]
+    form.currency.choices = [(k, f"{v[1]} {k} — {v[0]}") for k, v in SUPPORTED_CURRENCIES.items()]
+    form.base_currency.choices = [(k, f"{v[1]} {k} — {v[0]}") for k, v in SUPPORTED_CURRENCIES.items()]
+
     if form.validate_on_submit():
         current_user.email_alerts = form.email_alerts.data
         current_user.alert_threshold = int(form.alert_threshold.data)
+        current_user.language = form.language.data
+        current_user.currency = form.currency.data
+        current_user.base_currency = form.base_currency.data
         db.session.commit()
         flash("Settings saved.", "success")
         return redirect(url_for("settings"))
+
     form.alert_threshold.data = str(current_user.alert_threshold or 80)
+    form.language.data = current_user.language or "en"
+    form.currency.data = current_user.currency or "USD"
+    form.base_currency.data = current_user.base_currency or "USD"
+
     return render_template("settings.html", form=form)
+
+
+# ---------------- LIVE RATES API ----------------
+
+@app.route("/api/v1/rates")
+# ---------------- EXCHANGE PAGE ----------------
+
+@app.route("/exchange")
+@login_required
+def exchange_page():
+    """Exchange rate board, history chart, and calculator."""
+    base = current_user.base_currency or "USD"
+    display = current_user.currency or "USD"
+
+    # Order of preference in the board: NGN, EUR, GBP, CNY, JPY, then the rest
+    preferred_order = ["NGN", "EUR", "GBP", "CNY", "JPY", "INR", "CAD", "AUD"]
+    all_codes = [c for c in preferred_order if c in SUPPORTED_CURRENCIES]
+    for c in SUPPORTED_CURRENCIES:
+        if c not in all_codes and c != base:
+            all_codes.append(c)
+
+    board = build_rate_board(base, all_codes)
+
+    return render_template(
+        "exchange.html",
+        base=base,
+        display=display,
+        board=board,
+        currencies=SUPPORTED_CURRENCIES,
+    )
+
+
+@app.route("/api/v1/history")
+@login_required
+def api_history():
+    """Return daily historical rates for a currency pair (JSON)."""
+    base = (request.args.get("base") or current_user.base_currency or "USD").upper()
+    target = (request.args.get("target") or "").upper()
+    try:
+        days = int(request.args.get("days", 30))
+    except ValueError:
+        days = 30
+    days = max(7, min(days, 180))
+
+    if not target:
+        return jsonify({"error": "target is required"}), 400
+    if target not in SUPPORTED_CURRENCIES:
+        return jsonify({"error": "unsupported target"}), 400
+
+    series = fetch_history(base, target, days=days)
+    return jsonify({
+        "base": base,
+        "target": target,
+        "days": days,
+        "series": [{"date": d, "rate": r} for d, r in series],
+    })
+
+
+@app.route("/api/v1/convert")
+@login_required
+def api_convert():
+    """Convert an amount between two currencies (JSON)."""
+    try:
+        amount = float(request.args.get("amount", "1"))
+    except ValueError:
+        return jsonify({"error": "invalid amount"}), 400
+
+    from_c = (request.args.get("from") or current_user.base_currency or "USD").upper()
+    to_c = (request.args.get("to") or current_user.currency or "USD").upper()
+
+    converted, rate = convert_currency(amount, from_c, to_c)
+    if converted is None:
+        return jsonify({"error": "could not convert"}), 502
+
+    return jsonify({
+        "amount": amount, "from": from_c, "to": to_c,
+        "rate": rate, "converted": converted,
+    })
+@login_required
+def api_rates():
+    base = current_user.base_currency or "USD"
+    rates = fetch_rates(base)
+    if not rates:
+        return jsonify({"error": "could not fetch rates"}), 502
+    filtered = {k: rates[k] for k in SUPPORTED_CURRENCIES if k in rates}
+    return jsonify({"base": base, "rates": filtered})
+
+
+# ---------------- AI ADVISOR ----------------
+
+@app.route("/ai")
+@login_required
+def ai_page():
+    messages = (
+        AiChat.query
+        .filter_by(user_id=current_user.id)
+        .order_by(AiChat.created_at.asc())
+        .all()
+    )
+    return render_template("ai.html", messages=messages)
+
+
+@app.route("/ai/chat", methods=["POST"])
+@login_required
+def ai_chat_endpoint():
+    data = request.get_json(silent=True) or {}
+    user_message = (data.get("message") or "").strip()
+    if not user_message:
+        return jsonify({"error": "empty message"}), 400
+    if len(user_message) > 1000:
+        return jsonify({"error": "message too long (max 1000 chars)"}), 400
+    reply = ai_chat(current_user.id, user_message)
+    return jsonify({"reply": reply})
+
+
+@app.route("/ai/clear", methods=["POST"])
+@login_required
+def ai_clear():
+    AiChat.query.filter_by(user_id=current_user.id).delete()
+    db.session.commit()
+    flash("AI conversation cleared.", "info")
+    return redirect(url_for("ai_page"))
 
 
 # ---------------- API TOKENS (web UI) ----------------
@@ -747,8 +943,7 @@ def settings():
 @app.route("/api/tokens", methods=["GET", "POST"])
 @login_required
 def api_tokens():
-    new_token_value = None  # We'll pass this to the template only on creation
-
+    new_token_value = None
     if request.method == "POST":
         name = request.form.get("name", "").strip() or "Unnamed"
         token_value = ApiToken.generate()
@@ -757,14 +952,10 @@ def api_tokens():
         db.session.commit()
         new_token_value = token_value
         flash(f"Token '{name}' created. Copy it below.", "success")
-        # Fall through to render the page with the new token visible once
 
     tokens = ApiToken.query.filter_by(user_id=current_user.id).order_by(ApiToken.created_at.desc()).all()
-    return render_template(
-        "api_tokens.html",
-        tokens=tokens,
-        new_token_value=new_token_value,
-    )
+    return render_template("api_tokens.html", tokens=tokens, new_token_value=new_token_value)
+
 
 @app.route("/api/tokens/<int:token_id>/delete", methods=["POST"])
 @login_required
@@ -790,6 +981,9 @@ def api_me():
         "email": u.email,
         "email_alerts": u.email_alerts,
         "alert_threshold": u.alert_threshold,
+        "language": u.language,
+        "currency": u.currency,
+        "base_currency": u.base_currency,
     })
 
 
@@ -893,6 +1087,19 @@ def api_categories():
 def api_summary():
     filters = parse_filters()
     return jsonify(build_summary(g.current_user.id, filters))
+
+
+@app.route("/api/v1/ai/chat", methods=["POST"])
+@require_token
+def api_ai_chat():
+    data = request.get_json(silent=True) or {}
+    user_message = (data.get("message") or "").strip()
+    if not user_message:
+        return jsonify({"error": "empty message"}), 400
+    if len(user_message) > 1000:
+        return jsonify({"error": "message too long"}), 400
+    reply = ai_chat(g.current_user.id, user_message)
+    return jsonify({"reply": reply})
 
 
 # ---------------- ERROR HANDLERS ----------------

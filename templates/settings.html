@@ -1,32 +1,53 @@
 {% extends "base.html" %}
-{% block title %}Settings — Ledger{% endblock %}
+{% block title %}{{ t('settings') }} — {{ t('app_name') }}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-6">
+    <div class="col-md-7">
         <div class="card p-4">
-            <h2 class="mb-4">⚙️ Settings</h2>
+            <h2 class="mb-4">⚙️ {{ t('settings') }}</h2>
 
             <form method="POST" novalidate>
                 {{ form.hidden_tag() }}
 
-                <div class="form-check mb-3">
-                    {{ form.email_alerts(class="form-check-input") }}
-                    <label class="form-check-label">{{ form.email_alerts.label.text }}</label>
+                <h5 class="mt-3 mb-3">🌍 {{ t('language') }}</h5>
+                <div class="mb-3">
+                    <label class="form-label">{{ t('language') }}</label>
+                    {{ form.language(class="form-select") }}
+                </div>
+
+                <hr class="my-4">
+
+                <h5 class="mb-3">💱 {{ t('currency') }}</h5>
+
+                <div class="mb-3">
+                    <label class="form-label">{{ t('amounts_stored_in') }}</label>
+                    {{ form.base_currency(class="form-select") }}
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.alert_threshold.label.text }}</label>
-                    {{ form.alert_threshold(class="form-select") }}
-                    <div class="form-text">You'll be alerted when spending reaches this % of a category's monthly budget.</div>
+                    <label class="form-label">{{ t('display_currency') }}</label>
+                    {{ form.currency(class="form-select") }}
                 </div>
 
-                {{ form.submit(class="btn btn-primary w-100") }}
-            </form>
+                <div class="alert alert-info small mb-3">
+                    <strong>ℹ️</strong> {{ t('settings_note') }}
+                </div>
 
-            <hr class="my-4">
-            <p class="text-muted small mb-1"><strong>Email notifications:</strong> when enabled, Ledger sends a one-time email per category per month when spending crosses your chosen threshold.</p>
-            <p class="text-muted small mb-0"><strong>Local testing:</strong> if SMTP isn't configured, alerts are printed to the console instead.</p>
+                <hr class="my-4">
+
+                <h5 class="mb-3">📧 {{ t('notifications') }}</h5>
+                <div class="form-check mb-3">
+                    {{ form.email_alerts(class="form-check-input") }}
+                    <label class="form-check-label">{{ t('email_alerts_label') }}</label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">{{ t('alert_at') }}</label>
+                    {{ form.alert_threshold(class="form-select") }}
+                </div>
+
+                {{ form.submit(class="btn btn-primary w-100", value=t('save_settings')) }}
+            </form>
         </div>
     </div>
 </div>

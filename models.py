@@ -17,6 +17,9 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     email_alerts = db.Column(db.Boolean, default=False, nullable=False)
     alert_threshold = db.Column(db.Integer, default=80)
+    language = db.Column(db.String(10), default="en", nullable=False)
+    currency = db.Column(db.String(3), default="USD", nullable=False)
+    base_currency = db.Column(db.String(3), default="USD", nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
@@ -24,13 +27,12 @@ class User(UserMixin, db.Model):
 
 
 class ApiToken(db.Model):
-    """A long-lived token that lets scripts/apps authenticate."""
     __tablename__ = "api_tokens"
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     token = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    name = db.Column(db.String(100), default="")  # e.g. "iPhone app"
+    name = db.Column(db.String(100), default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_used_at = db.Column(db.DateTime, nullable=True)
 
@@ -147,6 +149,9 @@ class SavingsGoal(db.Model):
             return None
         return (self.deadline - date.today()).days
 
+    def __repr__(self):
+        return f"<Goal {self.name} {self.current_amount}/{self.target_amount}>"
+
 
 class AlertLog(db.Model):
     __tablename__ = "alert_log"
@@ -160,3 +165,26 @@ class AlertLog(db.Model):
 
     def __repr__(self):
         return f"<AlertLog user={self.user_id} {self.category} {self.month} {self.threshold}%>"
+
+
+class AiChat(db.Model):
+    """Stores AI advisor conversation history per user."""
+    __tablename__ = "ai_chats"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    role = db.Column(db.String(20), nullable=False)  # "user" or "assistant"
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship("User", backref=db.backref("ai_chats", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self):
+        return {
+            "role": self.role,
+            "content": self.content,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    def __repr__(self):
+        return f"<AiChat {self.role} user={self.user_id}>"

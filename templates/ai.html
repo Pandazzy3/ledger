@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}{{ t('ai_financial_advisor') }} — {{ t('app_name') }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="mb-0">🤖 {{ t('ai_financial_advisor') }}</h1>
+    <form method="POST" action="{{ url_for('ai_clear') }}"
+          onsubmit="return confirm('{{ t('confirm_delete') }}');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-sm btn-outline-secondary">🗑️ {{ t('clear_chat') }}</button>
+    </form>
+</div>
+
+<div class="card p-4 mb-4" style="min-height: 400px;">
+    <div id="chatMessages" style="max-height: 60vh; overflow-y: auto;">
+
+        {% if not messages %}
+        <div class="text-center text-muted py-5" id="emptyState">
+            <p class="lead mb-2">👋 {{ t('ai_greeting') }}</p>
+            <p>{{ t('ai_intro') }}</p>
+            <div class="d-flex flex-wrap gap-2 justify-content-center mt-3">
+                <button class="btn btn-sm btn-outline-primary suggestion" data-q="{{ t('ai_q1') }}">{{ t('ai_q1') }}</button>
+                <button class="btn btn-sm btn-outline-primary suggestion" data-q="{{ t('ai_q2') }}">{{ t('ai_q2') }}</button>
+                <button class="btn btn-sm btn-outline-primary suggestion" data-q="{{ t('ai_q3') }}">{{ t('ai_q3') }}</button>
+                <button class="btn btn-sm btn-outline-primary suggestion" data-q="{{ t('ai_q4') }}">{{ t('ai_q4') }}</button>
+            </div>
+        </div>
+        {% endif %}
+
+        {% for m in messages %}
+        <div class="d-flex mb-3 {% if m.role == 'user' %}justify-content-end{% endif %}">
+            <div class="p-3 rounded-3 {% if m.role == 'user' %}bg-primary text-white{% else %}bg-light{% endif %}"
+                 style="max-width: 80%; white-space: pre-wrap;">
+                {{ m.content }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card p-3">
+    <form id="chatForm" class="d-flex gap-2">
+        <input type="text" id="chatInput" class="form-control"
+               placeholder="{{ t('ask_about_spending') }}" maxlength="1000" autocomplete="off">
+        <button type="submit" class="btn btn-primary" id="chatSend">{{ t('send') }}</button>
+    </form>
+</div>
+
+<script>
+const chatForm = document.getElementById('chatForm');
+const chatInput = document.getElementById('chatInput');
+const sendBtn = document.getElementById('chatSend');
+const messagesEl = document.getElementById('chatMessages');
+const CSRF = "{{ csrf_token() }}";
+const THINKING_TEXT = "{{ t('thinking') }}";
+const SEND_TEXT = "{{ t('send') }}";
+
+function addMessage(role, text) {
+    const wrap = document.createElement('div');
+    wrap.className = 'd-flex mb-3' + (role === 'user' ? ' justify-content-end' : '');
+    const bubble = document.createElement('div');
+    bubble.className = 'p-3 rounded-3 ' + (role === 'user' ? 'bg-primary text-white' : 'bg-light');
+    bubble.style.maxWidth = '80%';
+    bubble.style.whiteSpace = 'pre-wrap';
+    bubble.textContent = text;
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return bubble;
+}
+
+async function sendMessage(text) {
+    if (!text.trim()) return;
+    addMessage('user', text);
+    chatInput.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = '...';
+
+    const empty = document.getElementById('emptyState');
+    if (empty) empty.remove();
+
+    const thinking = addMessage('assistant', THINKING_TEXT);
+
+    try {
+        const res = await fetch('/ai/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': CSRF,
+            },
+            body: JSON.stringify({ message: text }),
+        });
+        const data = await res.json();
+        thinking.textContent = data.reply || data.error || '(no response)';
+    } catch (e) {
+        thinking.textContent = 'Error: ' + e.message;
+    }
+
+    sendBtn.disabled = false;
+    sendBtn.textContent = SEND_TEXT;
+    chatInput.focus();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendMessage(chatInput.value);
+});
+
+document.querySelectorAll('.suggestion').forEach(btn => {
+    btn.addEventListener('click', () => sendMessage(btn.dataset.q));
+});
+
+messagesEl.scrollTop = messagesEl.scrollHeight;
+</script>
+{% endblock %}

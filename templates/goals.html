@@ -1,31 +1,31 @@
 {% extends "base.html" %}
-{% block title %}Savings Goals — Ledger{% endblock %}
+{% block title %}{{ t('savings_goals') }} — {{ t('app_name') }}{% endblock %}
 
 {% block content %}
-<h1 class="mb-4">🎯 Savings Goals</h1>
+<h1 class="mb-4">🎯 {{ t('savings_goals') }}</h1>
 
 <div class="card p-4 mb-4">
-    <h5 class="mb-3">Add a new goal</h5>
+    <h5 class="mb-3">{{ t('add_goal') }}</h5>
     <form method="POST" action="{{ url_for('add_goal') }}" class="row g-2 align-items-end" novalidate>
         {{ form.hidden_tag() }}
         <div class="col-md-4">
-            <label class="form-label small mb-1">{{ form.name.label.text }}</label>
-            {{ form.name(class="form-control", maxlength="100", placeholder="e.g. Emergency fund") }}
+            <label class="form-label small mb-1">{{ t('goal_name') }}</label>
+            {{ form.name(class="form-control", maxlength="100") }}
         </div>
         <div class="col-md-2">
-            <label class="form-label small mb-1">Target</label>
+            <label class="form-label small mb-1">{{ t('target_amount') }}</label>
             {{ form.target_amount(class="form-control", step="0.01", min="0.01") }}
         </div>
         <div class="col-md-2">
-            <label class="form-label small mb-1">Already saved</label>
+            <label class="form-label small mb-1">{{ t('already_saved') }} <span class="text-muted">({{ t('optional') }})</span></label>
             {{ form.current_amount(class="form-control", step="0.01", min="0", placeholder="0") }}
         </div>
         <div class="col-md-2">
-            <label class="form-label small mb-1">Deadline</label>
+            <label class="form-label small mb-1">{{ t('deadline') }} <span class="text-muted">({{ t('optional') }})</span></label>
             {{ form.deadline(class="form-control") }}
         </div>
         <div class="col-md-2">
-            <button type="submit" class="btn btn-primary w-100">+ Add Goal</button>
+            <button type="submit" class="btn btn-primary w-100">{{ t('add') }}</button>
         </div>
     </form>
 </div>
@@ -38,20 +38,20 @@
             <div class="d-flex justify-content-between align-items-start">
                 <h5 class="mb-1">{{ g.name }}</h5>
                 <form method="POST" action="{{ url_for('delete_goal', goal_id=g.id) }}" class="d-inline"
-                      onsubmit="return confirm('Delete this goal?');">
+                      onsubmit="return confirm('{{ t('delete') }}?');">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button class="btn btn-sm btn-outline-danger">🗑️</button>
                 </form>
             </div>
             <div class="mb-2 text-muted small">
                 {% if g.deadline %}
-                    Deadline: {{ g.deadline.strftime('%Y-%m-%d') }}
-                    {% if g.days_left is not none %} · {{ g.days_left }} days left{% endif %}
-                {% else %}No deadline{% endif %}
+                    {{ t('deadline') }}: {{ g.deadline.strftime('%Y-%m-%d') }}
+                    {% if g.days_left is not none %} · {{ g.days_left }} {{ t('days_left') }}{% endif %}
+                {% else %}{{ t('no_deadline') }}{% endif %}
             </div>
             <div class="d-flex justify-content-between fs-5 mb-2">
-                <span><strong>{{ "%.2f"|format(g.current_amount) }}</strong>
-                      <span class="text-muted fs-6">/ {{ "%.2f"|format(g.target_amount) }}</span></span>
+                <span><strong>{{ g.current_amount | money }}</strong>
+                      <span class="text-muted fs-6">/ {{ g.target_amount | money }}</span></span>
                 <span class="{% if g.progress_pct >= 100 %}text-success{% endif %}">
                     {{ "%.1f"|format(g.progress_pct) }}%
                 </span>
@@ -60,14 +60,14 @@
                 <div class="progress-bar {% if g.progress_pct >= 100 %}bg-success{% else %}bg-primary{% endif %}"
                      style="width: {{ g.progress_pct }}%;"></div>
             </div>
-            <div class="mt-2 small text-muted">Remaining: {{ "%.2f"|format(g.remaining) }}</div>
+            <div class="mt-2 small text-muted">{{ t('remaining') }}: {{ g.remaining | money }}</div>
 
             <form method="POST" action="{{ url_for('deposit_goal', goal_id=g.id) }}" class="row g-2 mt-2 align-items-end">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="col-8">
-                    <input type="number" name="amount" class="form-control form-control-sm" step="0.01" min="0.01" placeholder="Deposit amount">
+                    <input type="number" name="amount" class="form-control form-control-sm" step="0.01" min="0.01" placeholder="{{ t('deposit_amount') }}">
                 </div>
-                <div class="col-4"><button class="btn btn-sm btn-primary w-100">Deposit</button></div>
+                <div class="col-4"><button class="btn btn-sm btn-primary w-100">{{ t('deposit') }}</button></div>
             </form>
         </div>
     </div>
@@ -75,7 +75,7 @@
 </div>
 {% else %}
 <div class="card p-5 text-center">
-    <p class="lead text-muted mb-0">No goals yet. Add one above!</p>
+    <p class="lead text-muted mb-0">{{ t('no_goals') }}</p>
 </div>
 {% endif %}
 {% endblock %}

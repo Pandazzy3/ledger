@@ -1,32 +1,32 @@
 {% extends "base.html" %}
-{% block title %}Login — Ledger{% endblock %}
+{% block title %}{{ t('log_in') }} — {{ t('app_name') }}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-6">
         <div class="card p-4">
-            <h2 class="mb-4">Log in</h2>
+            <h2 class="mb-4">{{ t('log_in') }}</h2>
 
             <form method="POST" novalidate>
                 {{ form.hidden_tag() }}
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.username.label.text }}</label>
+                    <label class="form-label">{{ t('username') }}</label>
                     {{ form.username(class="form-control", autofocus=true) }}
                     {% for err in form.username.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">{{ form.password.label.text }}</label>
+                    <label class="form-label">{{ t('password') }}</label>
                     {{ form.password(class="form-control") }}
                     {% for err in form.password.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
                 </div>
 
-                {{ form.submit(class="btn btn-primary w-100") }}
+                {{ form.submit(class="btn btn-primary w-100", value=t('log_in')) }}
             </form>
 
             <p class="mt-3 text-center text-muted">
-                No account? <a href="/register">Sign up</a>
+                {{ t('no_account') }} <a href="/register">{{ t('signup') }}</a>
             </p>
         </div>
     </div>

@@ -5,6 +5,8 @@ from wtforms import (
 )
 from wtforms.validators import DataRequired, Email, Length, EqualTo, NumberRange, Optional
 
+from translations import SUPPORTED_LANGUAGES, SUPPORTED_CURRENCIES
+
 
 class RegisterForm(FlaskForm):
     username = StringField("Username", validators=[DataRequired(), Length(min=3, max=50)])
@@ -65,4 +67,7 @@ class SettingsForm(FlaskForm):
                                   choices=[("50", "50% of budget"),
                                            ("80", "80% of budget"),
                                            ("100", "100% (over budget)")])
+    language = SelectField("Language", choices=[])
+    currency = SelectField("Display Currency", choices=[])
+    base_currency = SelectField("Amounts Stored In", choices=[])
     submit = SubmitField("Save Settings")

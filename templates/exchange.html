@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}{{ t('exchange_rates') }} — {{ t('app_name') }}{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">💱 {{ t('exchange_rates') }}</h1>
+
+<div class="card p-3 mb-4">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label small mb-1">{{ t('base_currency') }}</label>
+            <select id="baseSelect" class="form-select">
+                {% for code, (name, symbol) in currencies.items() %}
+                    <option value="{{ code }}" {% if code == base %}selected{% endif %}>
+                        {{ symbol }} {{ code }} — {{ name }}
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label small mb-1">{{ t('compare') }}</label>
+            <select id="targetSelect" class="form-select">
+                {% for code, (name, symbol) in currencies.items() %}
+                    {% if code != base %}
+                    <option value="{{ code }}" {% if code == 'NGN' %}selected{% endif %}>
+                        {{ symbol }} {{ code }} — {{ name }}
+                    </option>
+                    {% endif %}
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <button id="refreshBtn" class="btn btn-primary w-100">🔄 {{ t('refresh_rates') }}</button>
+        </div>
+    </div>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">📊 {{ t('rate_board') }} — 1 {{ base }} {{ t('equals') }}</h5>
+    {% if board %}
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>{{ t('currency') }}</th>
+                    <th class="text-end">Rate</th>
+                    <th class="text-end">{{ t('inverse') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in board %}
+                <tr>
+                    <td>
+                        <strong>{{ r.symbol }} {{ r.code }}</strong>
+                        <span class="text-muted small ms-2">{{ r.name }}</span>
+                    </td>
+                    <td class="text-end fw-bold">{{ "%.4f"|format(r.rate) }}</td>
+                    <td class="text-end text-muted small">
+                        {% if r.rate and r.rate > 0 %}1 {{ r.code }} = {{ "%.4f"|format(1.0 / r.rate) }} {{ base }}{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted text-center mb-0">Could not fetch rates. Try again in a moment.</p>
+    {% endif %}
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">📈 {{ t('historical_rate') }} — {{ t('last_30_days') }}</h5>
+    <p class="text-muted small" id="chartTitle">Loading...</p>
+    <canvas id="historyChart" height="100"></canvas>
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">🧮 {{ t('calculator') }}</h5>
+    <div class="row g-2 align-items-end">
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ t('amount') }}</label>
+            <input type="number" id="calcAmount" class="form-control" value="100" step="any">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ t('from') }}</label>
+            <select id="calcFrom" class="form-select">
+                {% for code, (name, symbol) in currencies.items() %}
+                    <option value="{{ code }}" {% if code == base %}selected{% endif %}>{{ symbol }} {{ code }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ t('to') }}</label>
+            <select id="calcTo" class="form-select">
+                {% for code, (name, symbol) in currencies.items() %}
+                    <option value="{{ code }}" {% if code == 'NGN' %}selected{% endif %}>{{ symbol }} {{ code }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-3">
+            <button id="calcBtn" class="btn btn-primary w-100">{{ t('convert') }}</button>
+        </div>
+    </div>
+    <div class="alert alert-info mt-3 mb-0 d-none" id="calcResult">
+        <strong id="calcResultText"></strong>
+        <div class="text-muted small mt-1" id="calcRateText"></div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+let historyChart = null;
+
+async function fetchWithTimeout(url, ms = 10000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try { return await fetch(url, { signal: controller.signal }); }
+    finally { clearTimeout(timer); }
+}
+
+async function loadHistory() {
+    const base = document.getElementById('baseSelect').value;
+    const target = document.getElementById('targetSelect').value;
+    const titleEl = document.getElementById('chartTitle');
+    titleEl.textContent = `Loading 1 ${base} → ${target}...`;
+
+    try {
+        const res = await fetchWithTimeout(`/api/v1/history?base=${base}&target=${target}&days=30`);
+        const data = await res.json();
+
+        if (data.error || !data.series || !data.series.length) {
+            titleEl.textContent = `No history available for ${base} → ${target}.`;
+            if (historyChart) { historyChart.destroy(); historyChart = null; }
+            return;
+        }
+
+        const labels = data.series.map(p => p.date);
+        const values = data.series.map(p => p.rate);
+        titleEl.textContent = `1 ${base} in ${target} — ${data.series.length} days`;
+
+        if (historyChart) historyChart.destroy();
+        historyChart = new Chart(document.getElementById('historyChart'), {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: `${base} → ${target}`,
+                    data: values,
+                    borderColor: '#4f46e5',
+                    backgroundColor: 'rgba(79,70,229,0.1)',
+                    fill: true, tension: 0.3, pointRadius: 2,
+                }]
+            },
+            options: {
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } },
+                    y: { beginAtZero: false }
+                }
+            }
+        });
+    } catch (e) {
+        titleEl.textContent = e.name === 'AbortError' ? 'Timed out.' : 'Error: ' + e.message;
+        if (historyChart) { historyChart.destroy(); historyChart = null; }
+    }
+}
+
+async function doConvert() {
+    const amount = document.getElementById('calcAmount').value;
+    const from = document.getElementById('calcFrom').value;
+    const to = document.getElementById('calcTo').value;
+
+    const result = document.getElementById('calcResult');
+    result.classList.remove('d-none');
+    document.getElementById('calcResultText').textContent = '...';
+    document.getElementById('calcRateText').textContent = '';
+
+    try {
+        const res = await fetchWithTimeout(`/api/v1/convert?amount=${amount}&from=${from}&to=${to}`, 8000);
+        const data = await res.json();
+        if (data.error) {
+            document.getElementById('calcResultText').textContent = 'Error: ' + data.error;
+            return;
+        }
+        document.getElementById('calcResultText').textContent =
+            `${data.amount} ${data.from} = ${data.converted} ${data.to}`;
+        document.getElementById('calcRateText').textContent =
+            `1 ${data.from} = ${data.rate} ${data.to}`;
+    } catch (e) {
+        document.getElementById('calcResultText').textContent =
+            e.name === 'AbortError' ? 'Timed out.' : 'Error: ' + e.message;
+    }
+}
+
+document.getElementById('targetSelect').addEventListener('change', loadHistory);
+document.getElementById('baseSelect').addEventListener('change', () => window.location.reload());
+document.getElementById('calcBtn').addEventListener('click', doConvert);
+document.getElementById('refreshBtn').addEventListener('click', () => window.location.reload());
+document.getElementById('calcAmount').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doConvert();
+});
+
+loadHistory();
+doConvert();
+</script>
+{% endblock %}

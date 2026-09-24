@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — Ledger{% endblock %}
+{% block title %}{{ t('dashboard') }} — Ledger{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="mb-0">👋 Welcome, {{ current_user.username }}</h1>
+    <h1 class="mb-0">👋 {{ t('welcome') }}, {{ current_user.username }}</h1>
     <div>
-        <a href="{{ url_for('list_categories') }}" class="btn btn-outline-secondary">⚙️ Categories</a>
-        <a href="{{ url_for('add_expense') }}" class="btn btn-primary">+ Add Entry</a>
+        <a href="{{ url_for('list_categories') }}" class="btn btn-outline-secondary">⚙️ {{ t('categories') }}</a>
+        <a href="{{ url_for('add_expense') }}" class="btn btn-primary">{{ t('add_entry') }}</a>
     </div>
 </div>
 
@@ -22,7 +22,7 @@
             <input type="date" name="end" class="form-control form-control-sm" value="{{ filters.end_str }}">
         </div>
         <div class="col-md-2">
-            <label class="form-label small mb-1">Category</label>
+            <label class="form-label small mb-1">{{ t('category') }}</label>
             <select name="category" class="form-select form-select-sm">
                 <option value="">All</option>
                 {% for c in all_categories %}
@@ -31,30 +31,29 @@
             </select>
         </div>
         <div class="col-md-2">
-            <label class="form-label small mb-1">Type</label>
+            <label class="form-label small mb-1">{{ t('type') }}</label>
             <select name="kind" class="form-select form-select-sm">
                 <option value="">All</option>
-                <option value="expense" {% if filters.kind == 'expense' %}selected{% endif %}>Expense</option>
-                <option value="income" {% if filters.kind == 'income' %}selected{% endif %}>Income</option>
+                <option value="expense" {% if filters.kind == 'expense' %}selected{% endif %}>{{ t('expense') }}</option>
+                <option value="income" {% if filters.kind == 'income' %}selected{% endif %}>{{ t('income') }}</option>
             </select>
         </div>
         <div class="col-md-2">
             <label class="form-label small mb-1">Search</label>
-            <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="description...">
+            <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="{{ t('description') }}...">
         </div>
         <div class="col-md-2 d-flex gap-2">
-            <button type="submit" class="btn btn-primary btn-sm flex-fill">Filter</button>
-            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">Reset</a>
+            <button type="submit" class="btn btn-primary btn-sm flex-fill">{{ t('filter') }}</button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">{{ t('reset') }}</a>
         </div>
     </form>
 
     <div class="mt-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span class="text-muted small">
-            {{ total_entries }} entr{{ 'y' if total_entries == 1 else 'ies' }}
-            between {{ filters.start_str }} and {{ filters.end_str }}
+            {{ total_entries }} entries between {{ filters.start_str }} and {{ filters.end_str }}
         </span>
         <a href="{{ url_for('export_csv', start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}"
-           class="btn btn-sm btn-outline-success">📥 Export CSV</a>
+           class="btn btn-sm btn-outline-success">📥 {{ t('export_csv') }}</a>
     </div>
 </div>
 
@@ -62,44 +61,44 @@
 <div class="row g-3 mb-4">
     <div class="col-md-4">
         <div class="card p-3">
-            <div class="text-muted small">Total Income</div>
-            <div class="fs-3 fw-bold text-success">+{{ "%.2f"|format(summary.total_income) }}</div>
+            <div class="text-muted small">{{ t('total_income') }}</div>
+            <div class="fs-3 fw-bold text-success">+{{ summary.total_income | money }}</div>
         </div>
     </div>
     <div class="col-md-4">
         <div class="card p-3">
-            <div class="text-muted small">Total Expenses</div>
-            <div class="fs-3 fw-bold text-danger">−{{ "%.2f"|format(summary.total_expense) }}</div>
+            <div class="text-muted small">{{ t('total_expenses') }}</div>
+            <div class="fs-3 fw-bold text-danger">−{{ summary.total_expense | money }}</div>
         </div>
     </div>
     <div class="col-md-4">
         <div class="card p-3">
-            <div class="text-muted small">Net Balance</div>
+            <div class="text-muted small">{{ t('net_balance') }}</div>
             <div class="fs-3 fw-bold {% if summary.net >= 0 %}text-success{% else %}text-danger{% endif %}">
-                {% if summary.net >= 0 %}+{% else %}−{% endif %}{{ "%.2f"|format(summary.net|abs) }}
+                {% if summary.net >= 0 %}+{% else %}−{% endif %}{{ summary.net | abs | money }}
             </div>
         </div>
     </div>
 </div>
 
-<!-- Quick stats strip -->
+<!-- Quick stats -->
 <div class="row g-3 mb-4">
     <div class="col-md-3">
         <div class="card p-3">
-            <div class="text-muted small">Entries in period</div>
+            <div class="text-muted small">Entries</div>
             <div class="fs-5 fw-semibold">{{ summary.quick.count }}</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="card p-3">
-            <div class="text-muted small">Average expense</div>
-            <div class="fs-5 fw-semibold">{{ "%.2f"|format(summary.quick.avg_expense) }}</div>
+            <div class="text-muted small">Avg expense</div>
+            <div class="fs-5 fw-semibold">{{ summary.quick.avg_expense | money }}</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="card p-3">
-            <div class="text-muted small">Biggest expense</div>
-            <div class="fs-5 fw-semibold">{{ "%.2f"|format(summary.quick.biggest) }}</div>
+            <div class="text-muted small">Biggest</div>
+            <div class="fs-5 fw-semibold">{{ summary.quick.biggest | money }}</div>
         </div>
     </div>
     <div class="col-md-3">
@@ -120,10 +119,10 @@
             <span><strong>{{ b.name }}</strong></span>
             <span class="text-muted">
                 {% if b.budget %}
-                    {{ "%.2f"|format(b.spent) }} / {{ "%.2f"|format(b.budget) }}
-                    {% if b.over %}<span class="badge bg-danger ms-2">Over by {{ "%.2f"|format(b.spent - b.budget) }}</span>{% endif %}
+                    {{ b.spent | money }} / {{ b.budget | money }}
+                    {% if b.over %}<span class="badge bg-danger ms-2">Over</span>{% endif %}
                 {% else %}
-                    {{ "%.2f"|format(b.spent) }} spent · <em>no budget</em>
+                    {{ b.spent | money }} spent · <em>no budget</em>
                 {% endif %}
             </span>
         </div>
@@ -165,12 +164,12 @@
         <table class="table table-hover mb-0 align-middle">
             <thead class="table-light">
                 <tr>
-                    <th>Date</th>
-                    <th>Type</th>
-                    <th>Category</th>
-                    <th>Description</th>
-                    <th class="text-end">Amount</th>
-                    <th class="text-end" style="width: 120px;">Actions</th>
+                    <th>{{ t('date') }}</th>
+                    <th>{{ t('type') }}</th>
+                    <th>{{ t('category') }}</th>
+                    <th>{{ t('description') }}</th>
+                    <th class="text-end">{{ t('amount') }}</th>
+                    <th class="text-end" style="width: 120px;">{{ t('actions') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -179,23 +178,24 @@
                     <td>{{ e.date.strftime('%Y-%m-%d') }}</td>
                     <td>
                         {% if e.kind == 'income' %}
-                            <span class="badge bg-success">Income</span>
+                            <span class="badge bg-success">{{ t('income') }}</span>
                         {% else %}
-                            <span class="badge bg-danger">Expense</span>
+                            <span class="badge bg-danger">{{ t('expense') }}</span>
                         {% endif %}
                     </td>
                     <td>{{ e.category }}</td>
                     <td>{{ e.description or '—' }}</td>
                     <td class="text-end fw-bold {% if e.kind == 'income' %}text-success{% else %}text-danger{% endif %}">
-                        {% if e.kind == 'income' %}+{% else %}−{% endif %}{{ "%.2f"|format(e.amount) }}
+                        {% if e.kind == 'income' %}+{% else %}−{% endif %}{{ e.amount | money }}
                     </td>
                     <td class="text-end">
                         <a href="{{ url_for('edit_expense', expense_id=e.id) }}"
-                           class="btn btn-sm btn-outline-secondary" title="Edit">✏️</a>
+                           class="btn btn-sm btn-outline-secondary" title="{{ t('edit') }}">✏️</a>
                         <form method="POST" action="{{ url_for('delete_expense', expense_id=e.id) }}"
                               class="d-inline"
-                              onsubmit="return confirm('Delete this entry?');">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">🗑️</button>
+                              onsubmit="return confirm('{{ t('delete') }}?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="{{ t('delete') }}">🗑️</button>
                         </form>
                     </td>
                 </tr>
@@ -204,29 +204,25 @@
         </table>
     </div>
 
-    <!-- Pagination -->
     {% if total_pages > 1 %}
     <div class="card-footer d-flex justify-content-between align-items-center">
         <span class="text-muted small">Page {{ page }} of {{ total_pages }}</span>
         <nav>
             <ul class="pagination pagination-sm mb-0">
                 <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-                    <a class="page-link"
-                       href="{{ url_for('dashboard', page=page-1, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">← Prev</a>
+                    <a class="page-link" href="{{ url_for('dashboard', page=page-1, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">← Prev</a>
                 </li>
                 {% for p in range(1, total_pages + 1) %}
                     {% if p == 1 or p == total_pages or (p >= page - 2 and p <= page + 2) %}
                         <li class="page-item {% if p == page %}active{% endif %}">
-                            <a class="page-link"
-                               href="{{ url_for('dashboard', page=p, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">{{ p }}</a>
+                            <a class="page-link" href="{{ url_for('dashboard', page=p, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">{{ p }}</a>
                         </li>
                     {% elif p == 2 or p == total_pages - 1 %}
                         <li class="page-item disabled"><span class="page-link">…</span></li>
                     {% endif %}
                 {% endfor %}
                 <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-                    <a class="page-link"
-                       href="{{ url_for('dashboard', page=page+1, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">Next →</a>
+                    <a class="page-link" href="{{ url_for('dashboard', page=page+1, start=filters.start_str, end=filters.end_str, category=filters.category, kind=filters.kind, q=filters.q) }}">Next →</a>
                 </li>
             </ul>
         </nav>
@@ -235,8 +231,8 @@
 </div>
 {% else %}
 <div class="card p-5 text-center">
-    <p class="lead text-muted mb-3">No entries match these filters.</p>
-    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Reset filters</a>
+    <p class="lead text-muted mb-3">{{ t('no_entries') }}</p>
+    <a href="{{ url_for('add_expense') }}" class="btn btn-primary">{{ t('add_entry') }}</a>
 </div>
 {% endif %}
 {% endblock %}
@@ -263,10 +259,7 @@
                     borderWidth: 2, borderColor: isDark ? '#1f2937' : '#fff'
                 }]
             },
-            options: {
-                plugins: { legend: { position: 'bottom', labels: { color: labelColor } } },
-                cutout: '55%'
-            }
+            options: { plugins: { legend: { position: 'bottom', labels: { color: labelColor } } }, cutout: '55%' }
         });
         window.__charts.push(c);
     }
@@ -281,10 +274,7 @@
             },
             options: {
                 plugins: { legend: { display: false } },
-                scales: {
-                    x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, color: labelColor } },
-                    y: { beginAtZero: true, ticks: { color: labelColor } }
-                }
+                scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, color: labelColor } }, y: { beginAtZero: true, ticks: { color: labelColor } } }
             }
         });
         window.__charts.push(c);

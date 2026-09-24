@@ -1,31 +1,23 @@
 {% extends "base.html" %}
-{% block title %}Ledger — Home{% endblock %}
+{% block title %}{{ t('app_name') }} — {{ t('home') }}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
     <div class="col-md-8">
         <div class="card p-5 text-center">
-            <h1 class="mb-3">Welcome to 💰 Ledger</h1>
+            <h1 class="mb-3">💰 {{ t('app_name') }}</h1>
             <p class="lead text-muted">
                 Track your income and expenses, visualize your spending, and stay on budget.
             </p>
+
             <hr class="my-4">
-            <p class="mb-0">
-                <strong>Database status:</strong>
-                {% if user_count == 0 %}
-                    <span class="text-success">✅ Connected — no users yet</span>
-                {% else %}
-                    <span class="text-success">✅ Connected — {{ user_count }} user(s) registered</span>
-                {% endif %}
-            </p>
-            <div class="mt-4">
-                {% if current_user.is_authenticated %}
-                    <a href="{{ url_for('dashboard') }}" class="btn btn-primary">Go to Dashboard</a>
-                {% else %}
-                    <a href="{{ url_for('register') }}" class="btn btn-primary">Sign Up</a>
-                    <a href="{{ url_for('login') }}" class="btn btn-outline-secondary">Log In</a>
-                {% endif %}
-            </div>
+
+            {% if current_user.is_authenticated %}
+                <a href="{{ url_for('dashboard') }}" class="btn btn-primary">{{ t('dashboard') }}</a>
+            {% else %}
+                <a href="{{ url_for('register') }}" class="btn btn-primary">{{ t('signup') }}</a>
+                <a href="{{ url_for('login') }}" class="btn btn-outline-secondary">{{ t('login') }}</a>
+            {% endif %}
         </div>
     </div>
 </div>
