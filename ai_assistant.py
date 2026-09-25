@@ -1,12 +1,4 @@
-"""AI budget assistant with multi-provider fallback and function calling.
-
-Providers tried in order (each has its own quota):
-1. Google Gemini    (GEMINI_API_KEY)
-2. Cerebras         (CEREBRAS_API_KEY)
-3. Mistral          (MISTRAL_API_KEY)
-
-If one provider fails or hits its quota, the next is tried automatically.
-"""
+"""AI budget assistant with multi-provider fallback and function calling."""
 import os
 import time
 import json
@@ -15,7 +7,9 @@ from calendar import monthrange
 
 from sqlalchemy import func
 
-from models import db, Expense, Category, SavingsGoal, AiChat
+from models import (
+    db, Account, Expense, Category, SavingsGoal, AiChat,
+)
 from translations import SUPPORTED_CURRENCIES
 from exchange_rates import fetch_rates, convert as convert_currency, build_rate_board
 
@@ -51,6 +45,13 @@ def build_financial_snapshot(user_id):
                    .order_by(func.sum(Expense.amount).desc()).all())
     by_cat = [{"category": r[0], "amount": round(float(r[1]), 2)} for r in by_cat_rows]
 
+    # Accounts
+    accounts = Account.query.filter_by(user_id=user_id, archived=False).order_by(Account.name).all()
+    accounts_list = [{
+        "id": a.id, "name": a.name, "kind": a.kind,
+        "balance": round(a.balance, 2), "currency": a.currency,
+    } for a in accounts]
+
     cats = Category.query.filter_by(user_id=user_id).all()
     categories_list = [{"id": c.id, "name": c.name, "kind": c.kind,
                         "monthly_budget": c.monthly_budget} for c in cats]
@@ -65,13 +66,17 @@ def build_financial_snapshot(user_id):
               .order_by(Expense.date.desc(), Expense.id.desc()).limit(15).all())
     recent_list = [{"id": e.id, "date": e.date.isoformat(), "kind": e.kind,
                     "amount": e.amount, "category": e.category,
-                    "description": e.description or ""} for e in recent]
+                    "description": e.description or "",
+                    "account_id": e.account_id,
+                    "account_name": e.account.name if e.account else None}
+                   for e in recent]
 
     return {
         "today": today.isoformat(),
         "base_currency": user.base_currency if user else "USD",
         "display_currency": user.currency if user else "USD",
         "language": user.language if user else "en",
+        "accounts": accounts_list,
         "this_month": {"label": month_start.strftime("%B %Y"),
                        "income": this_inc, "expenses": this_exp,
                        "net": round(this_inc - this_exp, 2),
@@ -91,6 +96,11 @@ def format_snapshot_for_prompt(s):
     lines.append(f"User's display currency: {s['display_currency']}")
     lines.append(f"User's UI language: {s['language']}")
     lines.append("")
+    if s['accounts']:
+        lines.append("=== ACCOUNTS (with IDs) ===")
+        for a in s['accounts']:
+            lines.append(f"  [{a['id']}] {a['name']} ({a['kind']}) — {a['balance']:.2f} {a['currency']}")
+        lines.append("")
     lines.append(f"=== THIS MONTH ({s['this_month']['label']}) ===")
     lines.append(f"Income: {s['this_month']['income']:.2f} {s['base_currency']}, "
                  f"Expenses: {s['this_month']['expenses']:.2f} {s['base_currency']}, "
@@ -121,12 +131,32 @@ def format_snapshot_for_prompt(s):
         lines.append("=== RECENT ENTRIES (with IDs, newest first) ===")
         for e in s['recent_expenses']:
             desc = f" — {e['description']}" if e['description'] else ""
+            acct = f" [{e['account_name']}]" if e['account_name'] else ""
             lines.append(f"  [{e['id']}] {e['date']}  {e['kind']:7s}  "
-                         f"{e['amount']:>8.2f}  {e['category']}{desc}")
+                         f"{e['amount']:>8.2f}  {e['category']}{acct}{desc}")
     return "\n".join(lines)
 
 
 # ---------------- TOOL EXECUTORS (DB) ----------------
+
+def _recalc_account_balance(account_id):
+    """Recompute an account's balance from its transactions."""
+    acct = db.session.get(Account, account_id)
+    if not acct:
+        return
+    rows = (db.session.query(Expense.kind, func.sum(Expense.amount))
+            .filter(Expense.account_id == account_id)
+            .group_by(Expense.kind).all())
+    income = 0.0
+    expense = 0.0
+    for kind, total in rows:
+        if kind == "income":
+            income = float(total)
+        elif kind == "expense":
+            expense = float(total)
+    acct.balance = round(income - expense, 2)
+    db.session.commit()
+
 
 def _tool_create_expense(user_id, args):
     try:
@@ -149,12 +179,34 @@ def _tool_create_expense(user_id, args):
     category = (args.get("category") or "Other").strip()
     description = (args.get("description") or "").strip()
 
+    # Optional account
+    account_id = args.get("account_id")
+    if account_id is not None:
+        try:
+            account_id = int(account_id)
+        except (TypeError, ValueError):
+            account_id = None
+        if account_id:
+            acct = db.session.get(Account, account_id)
+            if not acct or acct.user_id != user_id:
+                return {"error": f"no account with id {account_id}"}
+
     e = Expense(user_id=user_id, kind=kind, amount=amount,
-                category=category, description=description, date=expense_date)
+                category=category, description=description,
+                date=expense_date, account_id=account_id or None)
     db.session.add(e)
     db.session.commit()
-    return {"ok": True, "id": e.id, "amount": amount, "category": category,
-            "date": expense_date.isoformat(), "kind": kind}
+
+    if e.account_id:
+        _recalc_account_balance(e.account_id)
+
+    result = {"ok": True, "id": e.id, "amount": amount, "category": category,
+              "date": expense_date.isoformat(), "kind": kind}
+    if account_id:
+        acct = db.session.get(Account, account_id)
+        result["account"] = acct.name
+        result["account_new_balance"] = acct.balance
+    return result
 
 
 def _tool_delete_expense(user_id, args):
@@ -171,8 +223,14 @@ def _tool_delete_expense(user_id, args):
         return {"error": f"no expense with id {eid}"}
     info = {"id": e.id, "amount": e.amount, "category": e.category,
             "date": e.date.isoformat(), "kind": e.kind}
+    account_id = e.account_id
     db.session.delete(e)
     db.session.commit()
+
+    if account_id:
+        _recalc_account_balance(account_id)
+        info["account_recalculated"] = True
+
     return {"ok": True, "deleted": info}
 
 
@@ -278,6 +336,191 @@ def _tool_deposit_goal(user_id, args):
             "new_total": g.current_amount, "target": g.target_amount}
 
 
+# ---------------- ACCOUNT TOOLS ----------------
+
+def _tool_create_account(user_id, args):
+    """Create a new account."""
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required"}
+
+    kind = (args.get("kind") or "bank").lower()
+    valid_kinds = {"bank", "savings", "cash", "card", "wallet", "investment", "other"}
+    if kind not in valid_kinds:
+        return {"error": f"invalid kind '{kind}'. Must be one of: {', '.join(valid_kinds)}"}
+
+    try:
+        balance = float(args.get("balance", 0))
+    except (TypeError, ValueError):
+        balance = 0.0
+
+    currency = (args.get("currency") or "USD").upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        return {"error": f"unsupported currency '{currency}'"}
+
+    color = (args.get("color") or "#4f46e5").strip()
+    notes = (args.get("notes") or "").strip()
+
+    # Prevent duplicate names
+    if Account.query.filter_by(user_id=user_id, name=name).first():
+        return {"error": f"account '{name}' already exists"}
+
+    a = Account(user_id=user_id, name=name, kind=kind, balance=balance,
+                currency=currency, color=color, notes=notes)
+    db.session.add(a)
+    db.session.commit()
+    return {"ok": True, "id": a.id, "name": name, "kind": kind,
+            "balance": balance, "currency": currency}
+
+
+def _tool_update_account(user_id, args):
+    """Update an existing account's name, balance, kind, etc."""
+    acct_id = args.get("account_id")
+    if acct_id is None:
+        return {"error": "account_id is required"}
+    try:
+        acct_id = int(acct_id)
+    except (TypeError, ValueError):
+        return {"error": "account_id must be an integer"}
+
+    acct = Account.query.filter_by(id=acct_id, user_id=user_id).first()
+    if not acct:
+        return {"error": f"no account with id {acct_id}"}
+
+    changes = {}
+
+    if "name" in args and args["name"]:
+        new_name = args["name"].strip()
+        # check no duplicate
+        existing = Account.query.filter_by(user_id=user_id, name=new_name).first()
+        if existing and existing.id != acct.id:
+            return {"error": f"account '{new_name}' already exists"}
+        acct.name = new_name
+        changes["name"] = new_name
+
+    if "kind" in args and args["kind"]:
+        kind = args["kind"].lower()
+        valid_kinds = {"bank", "savings", "cash", "card", "wallet", "investment", "other"}
+        if kind not in valid_kinds:
+            return {"error": f"invalid kind '{kind}'"}
+        acct.kind = kind
+        changes["kind"] = kind
+
+    if "balance" in args and args["balance"] is not None:
+        try:
+            acct.balance = float(args["balance"])
+            changes["balance"] = acct.balance
+        except (TypeError, ValueError):
+            return {"error": "balance must be a number"}
+
+    if "currency" in args and args["currency"]:
+        currency = args["currency"].upper()
+        if currency not in SUPPORTED_CURRENCIES:
+            return {"error": f"unsupported currency '{currency}'"}
+        acct.currency = currency
+        changes["currency"] = currency
+
+    if "color" in args and args["color"]:
+        acct.color = args["color"].strip()
+        changes["color"] = acct.color
+
+    if "notes" in args and args["notes"] is not None:
+        acct.notes = args["notes"].strip()
+        changes["notes"] = acct.notes
+
+    if "archived" in args:
+        acct.archived = bool(args["archived"])
+        changes["archived"] = acct.archived
+
+    if not changes:
+        return {"error": "no changes provided"}
+
+    db.session.commit()
+    return {"ok": True, "id": acct.id, "name": acct.name, "changes": changes}
+
+
+def _tool_delete_account(user_id, args):
+    """Delete an account. Transactions are kept but unlinked."""
+    acct_id = args.get("account_id")
+    if acct_id is None:
+        return {"error": "account_id is required"}
+    try:
+        acct_id = int(acct_id)
+    except (TypeError, ValueError):
+        return {"error": "account_id must be an integer"}
+
+    acct = Account.query.filter_by(id=acct_id, user_id=user_id).first()
+    if not acct:
+        return {"error": f"no account with id {acct_id}"}
+
+    name = acct.name
+    Expense.query.filter_by(account_id=acct.id).update({"account_id": None})
+    db.session.delete(acct)
+    db.session.commit()
+    return {"ok": True, "deleted": {"id": acct_id, "name": name},
+            "note": "its transactions were kept but unlinked"}
+
+
+def _tool_transfer_between_accounts(user_id, args):
+    """Move money between two accounts."""
+    try:
+        from_id = int(args.get("from_account_id"))
+        to_id = int(args.get("to_account_id"))
+    except (TypeError, ValueError):
+        return {"error": "from_account_id and to_account_id must be integers"}
+
+    if from_id == to_id:
+        return {"error": "cannot transfer to the same account"}
+
+    try:
+        amount = float(args.get("amount"))
+        if amount <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return {"error": "amount must be a positive number"}
+
+    src = Account.query.filter_by(id=from_id, user_id=user_id).first()
+    dst = Account.query.filter_by(id=to_id, user_id=user_id).first()
+    if not src:
+        return {"error": f"no source account with id {from_id}"}
+    if not dst:
+        return {"error": f"no destination account with id {to_id}"}
+
+    date_str = args.get("date") or date.today().isoformat()
+    try:
+        tdate = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+
+    description = (args.get("description") or "").strip() or "Transfer"
+
+    db.session.add(Expense(
+        user_id=user_id, kind="expense", amount=amount, category="Transfer",
+        description=f"→ {dst.name}: {description}",
+        date=tdate, account_id=src.id,
+    ))
+    db.session.add(Expense(
+        user_id=user_id, kind="income", amount=amount, category="Transfer",
+        description=f"← {src.name}: {description}",
+        date=tdate, account_id=dst.id,
+    ))
+    db.session.commit()
+
+    _recalc_account_balance(src.id)
+    _recalc_account_balance(dst.id)
+
+    src = db.session.get(Account, src.id)
+    dst = db.session.get(Account, dst.id)
+    return {
+        "ok": True,
+        "amount": amount,
+        "from": {"name": src.name, "new_balance": src.balance},
+        "to": {"name": dst.name, "new_balance": dst.balance},
+    }
+
+
+# ---------------- EXCHANGE TOOLS ----------------
+
 def _tool_get_exchange_rate(user_id, args):
     from_c = (args.get("from_currency") or "USD").upper()
     to_c = (args.get("to_currency") or "USD").upper()
@@ -339,6 +582,10 @@ TOOL_EXECUTORS = {
     "update_budget": _tool_update_budget,
     "create_goal": _tool_create_goal,
     "deposit_goal": _tool_deposit_goal,
+    "create_account": _tool_create_account,
+    "update_account": _tool_update_account,
+    "delete_account": _tool_delete_account,
+    "transfer_between_accounts": _tool_transfer_between_accounts,
     "get_exchange_rate": _tool_get_exchange_rate,
     "convert_currency": _tool_convert_currency,
     "get_rate_board": _tool_get_rate_board,
@@ -347,36 +594,50 @@ TOOL_EXECUTORS = {
 
 # ---------------- SYSTEM PROMPT ----------------
 
-SYSTEM_PROMPT = """You are Ledger's AI financial advisor. You can READ the user's data, MODIFY it, and look up live exchange rates.
+SYSTEM_PROMPT = """You are Ledger's AI financial advisor. You can READ and MODIFY the user's data, and look up live exchange rates.
 
-You can:
-- Analyze spending, budgets, and goals (from the data provided)
-- Add expenses and income (create_expense)
-- Delete expenses (delete_expense)
-- Create categories (create_category)
-- Update a category's monthly budget (update_budget)
-- Create savings goals (create_goal)
-- Deposit into savings goals (deposit_goal)
-- Get a single exchange rate (get_exchange_rate)
-- Convert an amount between currencies (convert_currency)
-- Get the full rate board for the user's base currency (get_rate_board)
+Available actions:
+
+EXPENSES
+- create_expense (add expense/income; optionally linked to an account_id)
+- delete_expense
+
+CATEGORIES
+- create_category
+- update_budget
+
+SAVINGS GOALS
+- create_goal
+- deposit_goal
+
+ACCOUNTS (bank, savings, cash, credit card, wallet, investment)
+- create_account
+- update_account (change name, balance, kind, currency, color, notes, archive)
+- delete_account (transactions are kept but unlinked)
+- transfer_between_accounts
+
+EXCHANGE RATES
+- get_exchange_rate
+- convert_currency
+- get_rate_board
 
 RULES:
-1. When the user asks to make a change (add/delete/update/create), USE THE APPROPRIATE TOOL.
-2. When the user asks about exchange rates or currency conversion, USE the rate tools.
-3. IMPORTANT: Reply in the same language the user wrote in.
-4. After calling a tool successfully, confirm with the real numbers.
-5. If a tool fails, explain clearly and suggest a fix.
-6. Never invent IDs or rates.
-7. If the user's intent is unclear, ask ONE clarifying question.
-8. Be warm and concise. 2-3 short paragraphs maximum."""
+1. When the user asks to make a change (add/delete/update/create/transfer), USE THE APPROPRIATE TOOL.
+2. Accounts have IDs shown in the ACCOUNTS section. Reference them by ID when calling account tools.
+3. When adding an expense that mentions an account (e.g. "from my GTBank"), pass the account_id.
+4. When transferring, always specify both from_account_id and to_account_id.
+5. Reply in the same language the user wrote in.
+6. Confirm actions with real numbers after success.
+7. If a tool fails, explain clearly.
+8. Never invent IDs.
+9. Be warm and concise. 2-3 short paragraphs max."""
 
 
 # ---------------- TOOL DECLARATIONS ----------------
 
 TOOL_DECLARATIONS = [{
     "name": "create_expense",
-    "description": "Add a new expense or income entry.",
+    "description": "Add a new expense or income entry, optionally linked to an account.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -385,6 +646,7 @@ TOOL_DECLARATIONS = [{
             "category": {"type": "string"},
             "description": {"type": "string"},
             "date": {"type": "string", "description": "YYYY-MM-DD"},
+            "account_id": {"type": "integer", "description": "Optional account ID"},
         },
         "required": ["amount", "category", "date"],
     },
@@ -444,6 +706,60 @@ TOOL_DECLARATIONS = [{
         "required": ["name", "amount"],
     },
 }, {
+    "name": "create_account",
+    "description": "Create a new financial account (bank, savings, cash, credit card, wallet, investment, or other).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "kind": {"type": "string", "enum": ["bank", "savings", "cash", "card", "wallet", "investment", "other"]},
+            "balance": {"type": "number", "description": "Starting balance"},
+            "currency": {"type": "string", "description": "3-letter code, e.g. USD"},
+            "color": {"type": "string", "description": "Hex color, e.g. #4f46e5"},
+            "notes": {"type": "string"},
+        },
+        "required": ["name"],
+    },
+}, {
+    "name": "update_account",
+    "description": "Update an existing account — rename, change balance, kind, currency, color, notes, or archive it.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "account_id": {"type": "integer"},
+            "name": {"type": "string"},
+            "kind": {"type": "string", "enum": ["bank", "savings", "cash", "card", "wallet", "investment", "other"]},
+            "balance": {"type": "number"},
+            "currency": {"type": "string"},
+            "color": {"type": "string"},
+            "notes": {"type": "string"},
+            "archived": {"type": "boolean"},
+        },
+        "required": ["account_id"],
+    },
+}, {
+    "name": "delete_account",
+    "description": "Delete an account. Its transactions will be kept but unlinked from the account.",
+    "parameters": {
+        "type": "object",
+        "properties": {"account_id": {"type": "integer"}},
+        "required": ["account_id"],
+    },
+}, {
+    "name": "transfer_between_accounts",
+    "description": "Move money from one account to another.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "from_account_id": {"type": "integer"},
+            "to_account_id": {"type": "integer"},
+            "amount": {"type": "number"},
+            "description": {"type": "string"},
+            "date": {"type": "string", "description": "YYYY-MM-DD"},
+        },
+        "required": ["from_account_id", "to_account_id", "amount"],
+    },
+}, {
     "name": "get_exchange_rate",
     "description": "Get the current live exchange rate between two currencies.",
     "parameters": {
@@ -456,7 +772,7 @@ TOOL_DECLARATIONS = [{
     },
 }, {
     "name": "convert_currency",
-    "description": "Convert an amount from one currency to another using live rates.",
+    "description": "Convert an amount between currencies using live rates.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -471,9 +787,7 @@ TOOL_DECLARATIONS = [{
     "description": "Get a table of many currency rates against a base currency.",
     "parameters": {
         "type": "object",
-        "properties": {
-            "base_currency": {"type": "string"},
-        },
+        "properties": {"base_currency": {"type": "string"}},
     },
 }]
 
@@ -494,7 +808,6 @@ GEMINI_MODELS = [
 
 
 def _try_gemini(prompt):
-    """Try Gemini with model fallback. Returns (reply_text, tool_calls) or (None, [])."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None, []
@@ -583,7 +896,6 @@ def _openai_tool_schema():
 
 
 def _try_openai_provider(provider, system_prompt, user_message, history_messages):
-    """Try one OpenAI-compatible provider. Returns (reply_text, tool_calls) or (None, [])."""
     api_key = os.environ.get(provider["api_key_env"])
     if not api_key:
         return None, []
@@ -604,11 +916,8 @@ def _try_openai_provider(provider, system_prompt, user_message, history_messages
     for model in provider["models"]:
         try:
             response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                timeout=30,
+                model=model, messages=messages,
+                tools=tools, tool_choice="auto", timeout=30,
             )
             break
         except Exception as e:
@@ -665,11 +974,9 @@ Respond in the user's language. Call tools if needed."""
 
 User message: {user_message}"""
 
-    # --- Try Gemini first ---
     final_text, tool_calls = _try_gemini(full_prompt)
     used_provider = "Gemini" if (final_text is not None or tool_calls) else None
 
-    # --- Fall back to Cerebras / Mistral ---
     if final_text is None and not tool_calls:
         for provider in OPENAI_PROVIDERS:
             text, calls = _try_openai_provider(
@@ -687,7 +994,6 @@ User message: {user_message}"""
 
     print(f"[AI] Responded via {used_provider}")
 
-    # --- No tools: just return the reply ---
     if not tool_calls:
         reply = final_text or "(no response)"
         db.session.add(AiChat(user_id=user_id, role="user", content=user_message))
@@ -695,7 +1001,6 @@ User message: {user_message}"""
         db.session.commit()
         return reply
 
-    # --- Execute tools ---
     tool_results_text = []
     for call in tool_calls:
         fname = call["name"]
@@ -712,7 +1017,6 @@ User message: {user_message}"""
 
         tool_results_text.append(f"[{fname}] args={json.dumps(args)} -> {json.dumps(result)}")
 
-    # --- Summarize the tool results ---
     followup_prompt = f"""You just executed:
 {chr(10).join(tool_results_text)}
 
