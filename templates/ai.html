@@ -29,8 +29,7 @@
 
         {% for m in messages %}
         <div class="d-flex mb-3 {% if m.role == 'user' %}justify-content-end{% endif %}">
-            <div class="p-3 rounded-3 {% if m.role == 'user' %}bg-primary text-white{% else %}bg-light{% endif %}"
-                 style="max-width: 80%; white-space: pre-wrap;">
+            <div class="chat-bubble {% if m.role == 'user' %}chat-user{% else %}chat-assistant{% endif %}">
                 {{ m.content }}
             </div>
         </div>
@@ -46,6 +45,31 @@
     </form>
 </div>
 
+<style>
+    .chat-bubble {
+        max-width: 80%;
+        white-space: pre-wrap;
+        padding: 0.75rem 1rem;
+        border-radius: 12px;
+        line-height: 1.5;
+        word-wrap: break-word;
+    }
+    .chat-user {
+        background: #4f46e5;
+        color: #ffffff;
+    }
+    .chat-assistant {
+        background: var(--bs-secondary-bg);
+        color: var(--bs-body-color);
+        border: 1px solid var(--bs-border-color);
+    }
+    [data-bs-theme="dark"] .chat-assistant {
+        background: #2a2a3e;
+        color: #e5e7eb;
+        border-color: #3a3a4e;
+    }
+</style>
+
 <script>
 const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
@@ -59,9 +83,7 @@ function addMessage(role, text) {
     const wrap = document.createElement('div');
     wrap.className = 'd-flex mb-3' + (role === 'user' ? ' justify-content-end' : '');
     const bubble = document.createElement('div');
-    bubble.className = 'p-3 rounded-3 ' + (role === 'user' ? 'bg-primary text-white' : 'bg-light');
-    bubble.style.maxWidth = '80%';
-    bubble.style.whiteSpace = 'pre-wrap';
+    bubble.className = 'chat-bubble ' + (role === 'user' ? 'chat-user' : 'chat-assistant');
     bubble.textContent = text;
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
