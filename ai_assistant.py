@@ -1,4 +1,12 @@
-"""AI budget assistant powered by Google Gemini with function calling."""
+"""AI budget assistant with multi-provider fallback and function calling.
+
+Providers tried in order (each has its own quota):
+1. Google Gemini    (GEMINI_API_KEY)
+2. Cerebras         (CEREBRAS_API_KEY)
+3. Mistral          (MISTRAL_API_KEY)
+
+If one provider fails or hits its quota, the next is tried automatically.
+"""
 import os
 import time
 import json
@@ -59,15 +67,11 @@ def build_financial_snapshot(user_id):
                     "amount": e.amount, "category": e.category,
                     "description": e.description or ""} for e in recent]
 
-    base_currency = user.base_currency if user else "USD"
-    display_currency = user.currency if user else "USD"
-    language = user.language if user else "en"
-
     return {
         "today": today.isoformat(),
-        "base_currency": base_currency,
-        "display_currency": display_currency,
-        "language": language,
+        "base_currency": user.base_currency if user else "USD",
+        "display_currency": user.currency if user else "USD",
+        "language": user.language if user else "en",
         "this_month": {"label": month_start.strftime("%B %Y"),
                        "income": this_inc, "expenses": this_exp,
                        "net": round(this_inc - this_exp, 2),
@@ -274,12 +278,9 @@ def _tool_deposit_goal(user_id, args):
             "new_total": g.current_amount, "target": g.target_amount}
 
 
-# ---------------- TOOL EXECUTORS (exchange) ----------------
-
 def _tool_get_exchange_rate(user_id, args):
     from_c = (args.get("from_currency") or "USD").upper()
     to_c = (args.get("to_currency") or "USD").upper()
-
     if from_c not in SUPPORTED_CURRENCIES:
         return {"error": f"unsupported from_currency '{from_c}'"}
     if to_c not in SUPPORTED_CURRENCIES:
@@ -287,15 +288,11 @@ def _tool_get_exchange_rate(user_id, args):
     if from_c == to_c:
         return {"ok": True, "rate": 1.0, "from": from_c, "to": to_c,
                 "description": f"1 {from_c} = 1 {to_c}"}
-
     converted, rate = convert_currency(1.0, from_c, to_c)
     if rate is None:
         return {"error": "could not fetch rate"}
-
-    return {
-        "ok": True, "from": from_c, "to": to_c, "rate": rate,
-        "description": f"1 {from_c} = {rate} {to_c}",
-    }
+    return {"ok": True, "from": from_c, "to": to_c, "rate": rate,
+            "description": f"1 {from_c} = {rate} {to_c}"}
 
 
 def _tool_convert_currency(user_id, args):
@@ -303,19 +300,15 @@ def _tool_convert_currency(user_id, args):
         amount = float(args.get("amount"))
     except (TypeError, ValueError):
         return {"error": "amount must be a number"}
-
     from_c = (args.get("from_currency") or "USD").upper()
     to_c = (args.get("to_currency") or "USD").upper()
-
     if from_c not in SUPPORTED_CURRENCIES:
         return {"error": f"unsupported from_currency '{from_c}'"}
     if to_c not in SUPPORTED_CURRENCIES:
         return {"error": f"unsupported to_currency '{to_c}'"}
-
     converted, rate = convert_currency(amount, from_c, to_c)
     if converted is None:
         return {"error": "could not fetch rate"}
-
     return {"ok": True, "amount": amount, "from": from_c, "to": to_c,
             "rate": rate, "converted": converted}
 
@@ -324,27 +317,19 @@ def _tool_get_rate_board(user_id, args):
     from models import User
     user = db.session.get(User, user_id)
     base = (args.get("base_currency") or (user.base_currency if user else "USD") or "USD").upper()
-
     if base not in SUPPORTED_CURRENCIES:
         return {"error": f"unsupported base_currency '{base}'"}
-
     preferred = ["EUR", "GBP", "CNY", "NGN", "JPY", "INR", "CAD", "AUD", "CHF", "ZAR", "KES", "GHS"]
     codes = [c for c in preferred if c in SUPPORTED_CURRENCIES and c != base]
     for c in SUPPORTED_CURRENCIES:
         if c not in codes and c != base:
             codes.append(c)
-
     board = build_rate_board(base, codes)
     if not board:
         return {"error": "could not fetch rates"}
-
-    return {
-        "ok": True, "base": base, "count": len(board),
-        "rates": [
-            {"code": r["code"], "name": r["name"], "symbol": r["symbol"], "rate": r["rate"]}
-            for r in board
-        ],
-    }
+    return {"ok": True, "base": base, "count": len(board),
+            "rates": [{"code": r["code"], "name": r["name"],
+                       "symbol": r["symbol"], "rate": r["rate"]} for r in board]}
 
 
 TOOL_EXECUTORS = {
@@ -372,57 +357,19 @@ You can:
 - Update a category's monthly budget (update_budget)
 - Create savings goals (create_goal)
 - Deposit into savings goals (deposit_goal)
-- Get a single exchange rate (get_exchange_rate) — e.g. "USD to NGN"
-- Convert an amount between currencies (convert_currency) — e.g. "convert $250 to EUR"
-- Get the full rate board for the user's base currency (get_rate_board) — e.g. "show all rates"
+- Get a single exchange rate (get_exchange_rate)
+- Convert an amount between currencies (convert_currency)
+- Get the full rate board for the user's base currency (get_rate_board)
 
 RULES:
 1. When the user asks to make a change (add/delete/update/create), USE THE APPROPRIATE TOOL.
 2. When the user asks about exchange rates or currency conversion, USE the rate tools.
-3. IMPORTANT: Reply in the same language the user wrote in. If the user's UI language is 'zh', reply in Chinese. If 'es', reply in Spanish. Etc.
+3. IMPORTANT: Reply in the same language the user wrote in.
 4. After calling a tool successfully, confirm with the real numbers.
 5. If a tool fails, explain clearly and suggest a fix.
-6. Never invent IDs or rates — always use data from the tools or the snapshot.
+6. Never invent IDs or rates.
 7. If the user's intent is unclear, ask ONE clarifying question.
-8. Be warm and concise. 2-3 short paragraphs maximum.
-
-Today's date and the user's base/display currencies are provided in the data block."""
-
-
-# ---------------- MODEL SELECTION ----------------
-
-# Preferred model names, in order. Many have separate daily quotas.
-# We try them in order, falling back when one is exhausted (429).
-_PREFERRED_MODELS = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.0-flash",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-flash-latest",
-    "gemini-pro-latest",
-]
-
-
-def _pick_model(client):
-    """Pick the first preferred model that exists."""
-    try:
-        available = set()
-        for m in client.models.list():
-            name = m.name.split("/", 1)[-1] if "/" in m.name else m.name
-            available.add(name)
-    except Exception:
-        return _PREFERRED_MODELS[0]
-
-    for want in _PREFERRED_MODELS:
-        if want in available:
-            return want
-    for name in sorted(available):
-        if "flash" in name.lower() and "vision" not in name.lower():
-            return name
-    return None
+8. Be warm and concise. 2-3 short paragraphs maximum."""
 
 
 # ---------------- TOOL DECLARATIONS ----------------
@@ -502,8 +449,8 @@ TOOL_DECLARATIONS = [{
     "parameters": {
         "type": "object",
         "properties": {
-            "from_currency": {"type": "string", "description": "3-letter code, e.g. USD"},
-            "to_currency": {"type": "string", "description": "3-letter code, e.g. NGN"},
+            "from_currency": {"type": "string"},
+            "to_currency": {"type": "string"},
         },
         "required": ["from_currency", "to_currency"],
     },
@@ -521,43 +468,185 @@ TOOL_DECLARATIONS = [{
     },
 }, {
     "name": "get_rate_board",
-    "description": "Get a table of many currency rates against a base currency. Use when the user asks for many rates at once.",
+    "description": "Get a table of many currency rates against a base currency.",
     "parameters": {
         "type": "object",
         "properties": {
-            "base_currency": {"type": "string", "description": "3-letter code; defaults to user's stored currency"},
+            "base_currency": {"type": "string"},
         },
     },
 }]
 
 
-# ---------------- CHAT ----------------
+# ---------------- GEMINI ----------------
 
-def chat(user_id, user_message):
+GEMINI_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.0-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+]
+
+
+def _try_gemini(prompt):
+    """Try Gemini with model fallback. Returns (reply_text, tool_calls) or (None, [])."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return "The AI advisor is not configured. Please set GEMINI_API_KEY."
+        return None, []
 
     try:
         from google import genai
         from google.genai import types
     except ImportError:
-        return "The google-genai package is not installed. Run: pip install google-genai"
+        return None, []
 
     client = genai.Client(api_key=api_key)
-    model_name = _pick_model(client)
-    if not model_name:
-        return "No Gemini model is available for this API key."
+    tool = types.Tool(function_declarations=TOOL_DECLARATIONS)
+    config = types.GenerateContentConfig(tools=[tool])
 
+    response = None
+    for model in GEMINI_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model, contents=prompt, config=config,
+            )
+            break
+        except Exception as e:
+            err = str(e)
+            if "API_KEY_INVALID" in err or "API key not valid" in err:
+                return None, []
+            if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+                continue
+            if "503" in err or "UNAVAILABLE" in err:
+                time.sleep(2)
+                continue
+            continue
+
+    if response is None:
+        return None, []
+
+    tool_calls = []
+    final_text = ""
+    try:
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "function_call") and part.function_call:
+                tool_calls.append({"name": part.function_call.name,
+                                   "args": dict(part.function_call.args)})
+            elif hasattr(part, "text") and part.text:
+                final_text += part.text
+    except (AttributeError, IndexError):
+        pass
+
+    return final_text, tool_calls
+
+
+# ---------------- OPENAI-COMPATIBLE ----------------
+
+OPENAI_PROVIDERS = [
+    {
+        "name": "Cerebras",
+        "base_url": "https://api.cerebras.ai/v1",
+        "api_key_env": "CEREBRAS_API_KEY",
+        "models": ["gpt-oss-120b", "qwen-3.8-27b"],
+    },
+    {
+        "name": "Mistral",
+        "base_url": "https://api.mistral.ai/v1",
+        "api_key_env": "MISTRAL_API_KEY",
+        "models": [
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "ministral-14b-latest",
+            "ministral-8b-latest",
+        ],
+    },
+]
+
+
+def _openai_tool_schema():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": d["name"],
+                "description": d["description"],
+                "parameters": d["parameters"],
+            },
+        }
+        for d in TOOL_DECLARATIONS
+    ]
+
+
+def _try_openai_provider(provider, system_prompt, user_message, history_messages):
+    """Try one OpenAI-compatible provider. Returns (reply_text, tool_calls) or (None, [])."""
+    api_key = os.environ.get(provider["api_key_env"])
+    if not api_key:
+        return None, []
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None, []
+
+    client = OpenAI(base_url=provider["base_url"], api_key=api_key)
+    tools = _openai_tool_schema()
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history_messages)
+    messages.append({"role": "user", "content": user_message})
+
+    response = None
+    for model in provider["models"]:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                timeout=30,
+            )
+            break
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "rate" in err.lower() or "quota" in err.lower():
+                continue
+            if "model" in err.lower() and ("not" in err.lower() or "invalid" in err.lower()):
+                continue
+            continue
+
+    if response is None:
+        return None, []
+
+    choice = response.choices[0].message
+    tool_calls = []
+    if choice.tool_calls:
+        for tc in choice.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except (ValueError, AttributeError):
+                args = {}
+            tool_calls.append({"name": tc.function.name, "args": args})
+
+    return (choice.content or ""), tool_calls
+
+
+# ---------------- MAIN CHAT ----------------
+
+def chat(user_id, user_message):
     snapshot = build_financial_snapshot(user_id)
     data_block = format_snapshot_for_prompt(snapshot)
 
     history_rows = (AiChat.query.filter_by(user_id=user_id)
                     .order_by(AiChat.created_at.desc()).limit(10).all())
     history = list(reversed(history_rows))
-    history_text = "\n".join([f"{h.role}: {h.content}" for h in history]) or "(no prior conversation)"
 
-    prompt = f"""{SYSTEM_PROMPT}
+    history_text = "\n".join([f"{h.role}: {h.content}" for h in history]) or "(no prior conversation)"
+    full_prompt = f"""{SYSTEM_PROMPT}
 
 === USER'S FINANCIAL DATA ===
 {data_block}
@@ -568,61 +657,37 @@ def chat(user_id, user_message):
 === USER'S MESSAGE ===
 {user_message}
 
-Respond to the user in their language. If a database change or exchange lookup is needed, call the appropriate tool. Otherwise just answer."""
+Respond in the user's language. Call tools if needed."""
 
-    tool = types.Tool(function_declarations=TOOL_DECLARATIONS)
-    config = types.GenerateContentConfig(tools=[tool])
+    openai_history = [{"role": h.role, "content": h.content} for h in history]
+    openai_user_msg = f"""Financial data:
+{data_block}
 
-    # Try each candidate model until one succeeds
-    candidate_models = [model_name]
-    for fallback in _PREFERRED_MODELS:
-        if fallback not in candidate_models:
-            candidate_models.append(fallback)
+User message: {user_message}"""
 
-    response = None
-    last_error = None
+    # --- Try Gemini first ---
+    final_text, tool_calls = _try_gemini(full_prompt)
+    used_provider = "Gemini" if (final_text is not None or tool_calls) else None
 
-    for candidate in candidate_models:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=candidate,
-                    contents=prompt,
-                    config=config,
-                )
+    # --- Fall back to Cerebras / Mistral ---
+    if final_text is None and not tool_calls:
+        for provider in OPENAI_PROVIDERS:
+            text, calls = _try_openai_provider(
+                provider, SYSTEM_PROMPT, openai_user_msg, openai_history,
+            )
+            if text is not None or calls:
+                final_text = text
+                tool_calls = calls
+                used_provider = provider["name"]
                 break
-            except Exception as e:
-                last_error = e
-                err = str(e)
-                # 503 = temporary overload; retry same model
-                if "503" in err or "UNAVAILABLE" in err or "overloaded" in err.lower():
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                # 429 = quota exhausted; try next model
-                if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
-                    break
-                # Any other error — move to next model too
-                break
-        if response is not None:
-            break
 
-    if response is None:
-        return (f"The AI advisor hit an error. All models tried. "
-                f"Last error: {last_error}")
+    if final_text is None and not tool_calls:
+        return ("The AI advisor is temporarily unavailable. "
+                "All providers have hit their limits. Please try again later.")
 
-    # Parse the response for tool calls vs. plain text
-    tool_calls = []
-    final_text = ""
-    try:
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, "function_call") and part.function_call:
-                tool_calls.append(part.function_call)
-            elif hasattr(part, "text") and part.text:
-                final_text += part.text
-    except (AttributeError, IndexError):
-        pass
+    print(f"[AI] Responded via {used_provider}")
 
-    # If no tools requested, save and return
+    # --- No tools: just return the reply ---
     if not tool_calls:
         reply = final_text or "(no response)"
         db.session.add(AiChat(user_id=user_id, role="user", content=user_message))
@@ -630,11 +695,11 @@ Respond to the user in their language. If a database change or exchange lookup i
         db.session.commit()
         return reply
 
-    # Execute each tool call
+    # --- Execute tools ---
     tool_results_text = []
     for call in tool_calls:
-        fname = call.name
-        args = dict(call.args) if call.args else {}
+        fname = call["name"]
+        args = call["args"]
         executor = TOOL_EXECUTORS.get(fname)
 
         if not executor:
@@ -647,36 +712,22 @@ Respond to the user in their language. If a database change or exchange lookup i
 
         tool_results_text.append(f"[{fname}] args={json.dumps(args)} -> {json.dumps(result)}")
 
-    # Follow-up: ask the model to summarize the results
-    followup_prompt = f"""You just executed the following tool calls on the user's data:
-
+    # --- Summarize the tool results ---
+    followup_prompt = f"""You just executed:
 {chr(10).join(tool_results_text)}
 
-Write a short, friendly response to the user IN THEIR LANGUAGE. Cite real numbers and rates.
-If any call returned an error, explain what went wrong and how to fix it."""
+Write a short, friendly response to the user IN THEIR LANGUAGE. Cite real numbers."""
 
-    followup = None
-    for candidate in candidate_models:
-        try:
-            followup = client.models.generate_content(
-                model=candidate,
-                contents=followup_prompt,
-            )
-            break
-        except Exception as e:
-            last_error = e
-            err = str(e)
-            if "503" in err or "UNAVAILABLE" in err or "429" in err or "quota" in err.lower():
-                continue
-            break
+    followup_text, _ = _try_gemini(followup_prompt)
 
-    if followup is not None:
-        try:
-            reply = followup.text
-        except Exception:
-            reply = f"Done: {tool_results_text}"
-    else:
-        reply = f"Action completed (could not generate summary): {tool_results_text}"
+    if not followup_text:
+        for provider in OPENAI_PROVIDERS:
+            text, _ = _try_openai_provider(provider, SYSTEM_PROMPT, followup_prompt, [])
+            if text:
+                followup_text = text
+                break
+
+    reply = followup_text or f"Done: {tool_results_text}"
 
     db.session.add(AiChat(user_id=user_id, role="user", content=user_message))
     db.session.add(AiChat(user_id=user_id, role="assistant", content=reply))
