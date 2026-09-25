@@ -3,7 +3,7 @@ import secrets
 
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
-from werkzeug.security import generate_password_hash, check_password_hash
+
 
 db = SQLAlchemy()
 
@@ -46,6 +46,42 @@ class ApiToken(db.Model):
         return f"<ApiToken {self.name or self.id}>"
 
 
+class Account(db.Model):
+    """A financial account — bank, savings, cash, card, wallet, etc.
+
+    Balances are tracked manually: the user enters amounts, Ledger just
+    does the arithmetic. No real money moves through this app.
+    """
+    __tablename__ = "accounts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    name = db.Column(db.String(100), nullable=False)
+    kind = db.Column(db.String(20), nullable=False, default="bank")
+    # kind: bank, savings, cash, card, wallet, investment, other
+    balance = db.Column(db.Float, nullable=False, default=0.0)
+    currency = db.Column(db.String(3), default="USD", nullable=False)
+    color = db.Column(db.String(20), default="#4f46e5")
+    notes = db.Column(db.String(300), default="")
+    archived = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship("User", backref=db.backref("accounts", lazy=True, cascade="all, delete-orphan"))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "balance": round(self.balance, 2),
+            "currency": self.currency,
+            "archived": self.archived,
+        }
+
+    def __repr__(self):
+        return f"<Account {self.name} {self.balance} {self.currency}>"
+
+
 class Category(db.Model):
     __tablename__ = "categories"
 
@@ -59,15 +95,8 @@ class Category(db.Model):
     user = db.relationship("User", backref=db.backref("categories", lazy=True, cascade="all, delete-orphan"))
 
     def to_dict(self):
-        return {
-            "id": self.id,
-            "name": self.name,
-            "kind": self.kind,
-            "monthly_budget": self.monthly_budget,
-        }
-
-    def __repr__(self):
-        return f"<Category {self.name} ({self.kind})>"
+        return {"id": self.id, "name": self.name, "kind": self.kind,
+                "monthly_budget": self.monthly_budget}
 
 
 class Expense(db.Model):
@@ -81,19 +110,19 @@ class Expense(db.Model):
     description = db.Column(db.String(200), default="")
     date = db.Column(db.Date, nullable=False)
     recurring_id = db.Column(db.Integer, db.ForeignKey("recurring_rules.id"), nullable=True)
+    # Link to an account (nullable so old entries still work)
+    account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     user = db.relationship("User", backref=db.backref("expenses", lazy=True, cascade="all, delete-orphan"))
+    account = db.relationship("Account", backref=db.backref("expenses", lazy=True))
 
     def to_dict(self):
         return {
-            "id": self.id,
-            "kind": self.kind,
-            "amount": self.amount,
-            "category": self.category,
-            "description": self.description or "",
-            "date": self.date.isoformat(),
-            "recurring_id": self.recurring_id,
+            "id": self.id, "kind": self.kind, "amount": self.amount,
+            "category": self.category, "description": self.description or "",
+            "date": self.date.isoformat(), "recurring_id": self.recurring_id,
+            "account_id": self.account_id,
         }
 
     def __repr__(self):
@@ -112,9 +141,11 @@ class RecurringRule(db.Model):
     day_of_month = db.Column(db.Integer, nullable=False, default=1)
     active = db.Column(db.Boolean, default=True, nullable=False)
     last_posted_month = db.Column(db.String(7), nullable=True)
+    account_id = db.Column(db.Integer, db.ForeignKey("accounts.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     user = db.relationship("User", backref=db.backref("recurring_rules", lazy=True, cascade="all, delete-orphan"))
+    account = db.relationship("Account", backref=db.backref("recurring_rules", lazy=True))
 
     def __repr__(self):
         return f"<Recurring {self.kind} {self.amount} {self.category} day={self.day_of_month}>"
@@ -180,11 +211,8 @@ class AiChat(db.Model):
     user = db.relationship("User", backref=db.backref("ai_chats", lazy=True, cascade="all, delete-orphan"))
 
     def to_dict(self):
-        return {
-            "role": self.role,
-            "content": self.content,
-            "created_at": self.created_at.isoformat(),
-        }
+        return {"role": self.role, "content": self.content,
+                "created_at": self.created_at.isoformat()}
 
     def __repr__(self):
         return f"<AiChat {self.role} user={self.user_id}>"
