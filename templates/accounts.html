@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}{{ t('accounts_title') }} — {{ t('app_name') }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="mb-0">🏦 {{ t('accounts_title') }}</h1>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">{{ t('back_to_dashboard') }}</a>
+</div>
+
+<!-- Total balance summary -->
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card p-3">
+            <div class="text-muted small">{{ t('total_balance') }}</div>
+            <div class="fs-3 fw-bold">{{ total | money }}</div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card p-3">
+            <div class="text-muted small">{{ t('number_of_accounts') }}</div>
+            <div class="fs-3 fw-bold">{{ accounts | selectattr('archived', 'equalto', False) | list | length }}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Add account -->
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">{{ t('add_account') }}</h5>
+    <form method="POST" action="{{ url_for('add_account') }}" class="row g-2 align-items-end" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ t('account_name') }}</label>
+            {{ form.name(class="form-control", maxlength="100") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ t('account_type') }}</label>
+            {{ form.kind(class="form-select") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ t('current_balance') }}</label>
+            {{ form.balance(class="form-control", step="0.01", placeholder="0.00") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ t('currency') }}</label>
+            {{ form.currency(class="form-select") }}
+        </div>
+        <div class="col-md-1">
+            <label class="form-label small mb-1">{{ t('color') }}</label>
+            {{ form.color(class="form-control form-control-color", type="color") }}
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">{{ t('add') }}</button>
+        </div>
+    </form>
+</div>
+
+<!-- Transfer between accounts -->
+{% if accounts | selectattr('archived', 'equalto', False) | list | length >= 2 %}
+<div class="card p-4 mb-4">
+    <h5 class="mb-3">{{ t('transfer_between') }}</h5>
+    <form method="POST" action="{{ url_for('transfer_accounts') }}" class="row g-2 align-items-end" novalidate>
+        {{ transfer_form.hidden_tag() }}
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ t('from_account') }}</label>
+            {{ transfer_form.from_account_id(class="form-select") }}
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small mb-1">{{ t('to_account') }}</label>
+            {{ transfer_form.to_account_id(class="form-select") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ t('amount') }}</label>
+            {{ transfer_form.amount(class="form-control", step="0.01", min="0.01") }}
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ t('date') }}</label>
+            {{ transfer_form.date(class="form-control") }}
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">{{ t('transfer') }}</button>
+        </div>
+        <div class="col-md-12 mt-2">
+            <label class="form-label small mb-1">{{ t('description') }} ({{ t('optional') }})</label>
+            {{ transfer_form.description(class="form-control", maxlength="200") }}
+        </div>
+    </form>
+</div>
+{% endif %}
+
+<!-- Account list -->
+{% if accounts %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>{{ t('account_name') }}</th>
+                    <th>{{ t('account_type') }}</th>
+                    <th class="text-end">{{ t('balance') }}</th>
+                    <th>{{ t('notes') }}</th>
+                    <th class="text-end" style="width: 220px;">{{ t('actions') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for a in accounts %}
+                <tr class="{% if a.archived %}opacity-50{% endif %}">
+                    <td>
+                        <span class="badge me-2" style="background-color: {{ a.color }}">&nbsp;</span>
+                        <strong>{{ a.name }}</strong>
+                        {% if a.archived %}<span class="badge bg-secondary ms-2">{{ t('archived') }}</span>{% endif %}
+                    </td>
+                    <td>{{ t('account_kind_' + a.kind) }}</td>
+                    <td class="text-end fw-bold
+                        {% if a.balance < 0 %}text-danger{% elif a.balance > 0 %}text-success{% endif %}">
+                        {{ a.balance | money }}
+                    </td>
+                    <td class="text-muted small">{{ a.notes or '—' }}</td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                data-bs-toggle="modal" data-bs-target="#editAccount{{ a.id }}"
+                                title="{{ t('edit') }}">✏️</button>
+                        <form method="POST" action="{{ url_for('delete_account', account_id=a.id) }}"
+                              class="d-inline" onsubmit="return confirm('{{ t('confirm_delete') }}');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button class="btn btn-sm btn-outline-danger" title="{{ t('delete') }}">🗑️</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Edit modals (one per account) -->
+{% for a in accounts %}
+<div class="modal fade" id="editAccount{{ a.id }}" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('update_account', account_id=a.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="modal-header">
+                    <h5 class="modal-title">{{ t('edit') }}: {{ a.name }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">{{ t('account_name') }}</label>
+                        <input type="text" name="name" class="form-control" value="{{ a.name }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ t('account_type') }}</label>
+                        <select name="kind" class="form-select">
+                            {% for value, label in account_kinds.items() %}
+                                <option value="{{ value }}" {% if a.kind == value %}selected{% endif %}>
+                                    {{ t('account_kind_' + value) }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ t('current_balance') }}</label>
+                        <input type="number" name="balance" class="form-control" step="0.01"
+                               value="{{ a.balance }}">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ t('color') }}</label>
+                        <input type="color" name="color" class="form-control form-control-color"
+                               value="{{ a.color }}">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">{{ t('notes') }}</label>
+                        <textarea name="notes" class="form-control" maxlength="300" rows="2">{{ a.notes }}</textarea>
+                    </div>
+                    <div class="form-check">
+                        <input type="checkbox" name="archived" class="form-check-input"
+                               id="arch{{ a.id }}" {% if a.archived %}checked{% endif %}>
+                        <label class="form-check-label" for="arch{{ a.id }}">{{ t('archived') }}</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{{ t('cancel') }}</button>
+                    <button type="submit" class="btn btn-primary">{{ t('save_changes') }}</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="card p-5 text-center">
+    <p class="lead text-muted mb-0">{{ t('no_accounts') }}</p>
+</div>
+{% endif %}
+{% endblock %}

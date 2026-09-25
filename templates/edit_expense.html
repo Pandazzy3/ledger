@@ -27,7 +27,11 @@
                 <div class="mb-3">
                     <label class="form-label">{{ t('category') }}</label>
                     {{ form.category(class="form-control") }}
-                    {% for err in form.category.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">{{ t('account') }} <span class="text-muted">({{ t('optional') }})</span></label>
+                    {{ form.account_id(class="form-select") }}
                 </div>
 
                 <div class="mb-3">

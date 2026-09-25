@@ -43,6 +43,7 @@
             <div class="navbar-nav ms-auto align-items-center">
                 {% if current_user.is_authenticated %}
                     <a class="nav-link text-white" href="/dashboard">{{ t('dashboard') }}</a>
+                    <a class="nav-link text-white" href="/accounts" title="{{ t('accounts') }}">🏦</a>
                     <a class="nav-link text-white" href="/exchange" title="{{ t('exchange') }}">💱</a>
                     <a class="nav-link text-white" href="/recurring" title="{{ t('recurring') }}">🔁</a>
                     <a class="nav-link text-white" href="/goals" title="{{ t('goals') }}">🎯</a>

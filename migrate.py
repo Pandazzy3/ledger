@@ -1,31 +1,27 @@
-"""Safe migration: add missing columns to users table."""
+"""One-time migration: add accounts table and account_id columns."""
 from app import app, db
 from sqlalchemy import text, inspect
 
 with app.app_context():
+    db.create_all()  # creates the accounts table if missing
     inspector = inspect(db.engine)
-    cols = {c["name"] for c in inspector.get_columns("users")}
-    print("Current columns:", sorted(cols))
 
-    migrations = [
-        ("language",      "VARCHAR(10) DEFAULT 'en'"),
-        ("currency",      "VARCHAR(3)  DEFAULT 'USD'"),
-        ("base_currency", "VARCHAR(3)  DEFAULT 'USD'"),
-    ]
+    exp_cols = {c["name"] for c in inspector.get_columns("expenses")}
+    rec_cols = {c["name"] for c in inspector.get_columns("recurring_rules")}
 
     with db.engine.connect() as conn:
-        for col, definition in migrations:
-            if col in cols:
-                print(f"✓ {col} already exists")
-                continue
-            try:
-                conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {definition}"))
-                conn.commit()
-                print(f"+ added {col}")
-            except Exception as e:
-                print(f"✗ {col}: {e}")
+        if "account_id" not in exp_cols:
+            conn.execute(text("ALTER TABLE expenses ADD COLUMN account_id INTEGER REFERENCES accounts(id)"))
+            conn.commit()
+            print("+ expenses.account_id")
+        else:
+            print("  ok expenses.account_id")
 
-    # Verify
-    inspector = inspect(db.engine)
-    new_cols = {c["name"] for c in inspector.get_columns("users")}
-    print("After migration:", sorted(new_cols))
+        if "account_id" not in rec_cols:
+            conn.execute(text("ALTER TABLE recurring_rules ADD COLUMN account_id INTEGER REFERENCES accounts(id)"))
+            conn.commit()
+            print("+ recurring_rules.account_id")
+        else:
+            print("  ok recurring_rules.account_id")
+
+    print("Done.")

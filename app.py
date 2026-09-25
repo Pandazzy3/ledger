@@ -20,11 +20,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func
 
 from models import (
-    db, User, Category, Expense, RecurringRule, SavingsGoal, AlertLog, ApiToken, AiChat,
+    db, User, Account, Category, Expense, RecurringRule, SavingsGoal,
+    AlertLog, ApiToken, AiChat,
 )
 from forms import (
     RegisterForm, LoginForm, ExpenseForm, CategoryForm,
-    RecurringForm, GoalForm, SettingsForm,
+    RecurringForm, GoalForm, SettingsForm, AccountForm, TransferForm,
+    ACCOUNT_KINDS,
 )
 from api_auth import require_token
 from ai_assistant import chat as ai_chat
@@ -33,7 +35,6 @@ from translations import (
     get_currency_symbol, get_currency_name, get_language_name,
 )
 from exchange_rates import convert as convert_currency, fetch_rates
-from exchange_rates import convert as convert_currency, fetch_rates, fetch_history, build_rate_board
 from i18n import translate
 
 load_dotenv()
@@ -89,7 +90,7 @@ def money_filter(amount):
     return f"{symbol}{amount:,.2f}"
 
 
-# ---------------- CONTEXT PROCESSOR ----------------
+# ---------------- CONTEXT PROCESSORS ----------------
 
 @app.context_processor
 def inject_globals():
@@ -110,6 +111,15 @@ def inject_globals():
         "t": lambda key, **kw: translate(key, lang, **kw),
         "current_language": lang,
     }
+
+
+@app.context_processor
+def inject_accounts():
+    if not current_user.is_authenticated:
+        return {}
+    accounts = (Account.query.filter_by(user_id=current_user.id, archived=False)
+                .order_by(Account.name).all())
+    return {"user_accounts": accounts}
 
 
 # ---------------- EMAIL ----------------
@@ -191,6 +201,25 @@ def check_budget_alerts(user):
 
 # ---------------- HELPERS ----------------
 
+def recalc_account_balance(account_id):
+    """Recalculate an account's balance from its transactions."""
+    acct = db.session.get(Account, account_id)
+    if not acct:
+        return
+    rows = (db.session.query(Expense.kind, func.sum(Expense.amount))
+            .filter(Expense.account_id == account_id)
+            .group_by(Expense.kind).all())
+    income = 0.0
+    expense = 0.0
+    for kind, total in rows:
+        if kind == "income":
+            income = float(total)
+        elif kind == "expense":
+            expense = float(total)
+    acct.balance = round(income - expense, 2)
+    db.session.commit()
+
+
 def parse_filters():
     today = date.today()
     default_start = today - timedelta(days=29)
@@ -249,14 +278,19 @@ def run_recurring_for_user(user_id):
             rule.last_posted_month = current_month
             db.session.commit()
             continue
-        db.session.add(Expense(
+        e = Expense(
             user_id=user_id, kind=rule.kind, amount=rule.amount,
             category=rule.category,
             description=rule.description or f"[Auto] {rule.category}",
             date=today.replace(day=day), recurring_id=rule.id,
-        ))
+            account_id=rule.account_id,
+        )
+        db.session.add(e)
         rule.last_posted_month = current_month
         posted += 1
+        if rule.account_id:
+            db.session.flush()
+            recalc_account_balance(rule.account_id)
     if posted:
         db.session.commit()
     return posted
@@ -483,12 +517,13 @@ def export_csv():
     buf = StringIO()
     buf.write("\ufeff")
     writer = csv.writer(buf)
-    writer.writerow(["Date", "Type", "Category", "Description", "Amount", "Currency"])
+    writer.writerow(["Date", "Type", "Category", "Description", "Amount", "Currency", "Account"])
     for e in entries:
         writer.writerow([
             e.date.isoformat(), e.kind, e.category,
             e.description or "", f"{e.amount:.2f}",
             current_user.base_currency or "USD",
+            e.account.name if e.account else "",
         ])
     filename = f"ledger_{filters['start_str']}_to_{filters['end_str']}.csv"
     return Response(
@@ -503,19 +538,28 @@ def export_csv():
 @app.route("/expenses/add", methods=["GET", "POST"])
 @login_required
 def add_expense():
+    accounts = (Account.query.filter_by(user_id=current_user.id, archived=False)
+                .order_by(Account.name).all())
     form = ExpenseForm()
+    form.account_id.choices = [(0, "— No account —")] + [(a.id, a.name) for a in accounts]
+
     if form.validate_on_submit():
-        db.session.add(Expense(
+        e = Expense(
             user_id=current_user.id, kind=form.kind.data,
             amount=form.amount.data,
             category=form.category.data.strip() or "Other",
             description=(form.description.data or "").strip(),
             date=form.date.data,
-        ))
+            account_id=form.account_id.data or None,
+        )
+        db.session.add(e)
         db.session.commit()
+        if e.account_id:
+            recalc_account_balance(e.account_id)
         check_budget_alerts(current_user)
         flash(f"{form.kind.data.capitalize()} of {form.amount.data:.2f} added.", "success")
         return redirect(url_for("dashboard"))
+
     if not form.date.data:
         form.date.data = date.today()
     return render_template("add_expense.html", form=form)
@@ -528,14 +572,30 @@ def edit_expense(expense_id):
     if not expense or expense.user_id != current_user.id:
         flash("Entry not found.", "danger")
         return redirect(url_for("dashboard"))
+
+    accounts = (Account.query.filter_by(user_id=current_user.id, archived=False)
+                .order_by(Account.name).all())
     form = ExpenseForm(obj=expense)
+    form.account_id.choices = [(0, "— No account —")] + [(a.id, a.name) for a in accounts]
+    if not form.account_id.data:
+        form.account_id.data = expense.account_id or 0
+
+    old_account_id = expense.account_id
+
     if form.validate_on_submit():
         expense.kind = form.kind.data
         expense.amount = form.amount.data
         expense.category = form.category.data.strip() or "Other"
         expense.description = (form.description.data or "").strip()
         expense.date = form.date.data
+        expense.account_id = form.account_id.data or None
         db.session.commit()
+
+        if old_account_id:
+            recalc_account_balance(old_account_id)
+        if expense.account_id and expense.account_id != old_account_id:
+            recalc_account_balance(expense.account_id)
+
         check_budget_alerts(current_user)
         flash("Entry updated.", "success")
         return redirect(url_for("dashboard"))
@@ -549,10 +609,171 @@ def delete_expense(expense_id):
     if not expense or expense.user_id != current_user.id:
         flash("Entry not found.", "danger")
         return redirect(url_for("dashboard"))
+
+    account_id = expense.account_id
     db.session.delete(expense)
     db.session.commit()
+
+    if account_id:
+        recalc_account_balance(account_id)
+
     flash("Entry deleted.", "info")
     return redirect(url_for("dashboard"))
+
+
+# ---------------- ACCOUNTS ----------------
+
+@app.route("/accounts")
+@login_required
+def list_accounts():
+    accounts = (Account.query.filter_by(user_id=current_user.id)
+                .order_by(Account.archived, Account.name).all())
+    total = sum(a.balance for a in accounts if not a.archived)
+
+    form = AccountForm()
+    form.currency.choices = [(k, f"{v[1]} {k} — {v[0]}")
+                             for k, v in SUPPORTED_CURRENCIES.items()]
+    form.currency.data = current_user.base_currency or "USD"
+
+    transfer_form = TransferForm()
+    account_choices = [(a.id, a.name) for a in accounts if not a.archived]
+    transfer_form.from_account_id.choices = account_choices
+    transfer_form.to_account_id.choices = account_choices
+
+    return render_template(
+        "accounts.html",
+        accounts=accounts,
+        total=total,
+        form=form,
+        transfer_form=transfer_form,
+        account_kinds=dict(ACCOUNT_KINDS),
+    )
+
+
+@app.route("/accounts/add", methods=["POST"])
+@login_required
+def add_account():
+    form = AccountForm()
+    form.currency.choices = [(k, f"{v[1]} {k}") for k, v in SUPPORTED_CURRENCIES.items()]
+    if form.validate_on_submit():
+        acct = Account(
+            user_id=current_user.id,
+            name=form.name.data.strip(),
+            kind=form.kind.data,
+            balance=float(form.balance.data or 0),
+            currency=form.currency.data,
+            color=(form.color.data or "#4f46e5").strip(),
+            notes=(form.notes.data or "").strip(),
+        )
+        db.session.add(acct)
+        db.session.commit()
+        flash(f"Account '{acct.name}' created.", "success")
+    else:
+        flash("Invalid account details.", "danger")
+    return redirect(url_for("list_accounts"))
+
+
+@app.route("/accounts/<int:account_id>/update", methods=["POST"])
+@login_required
+def update_account(account_id):
+    acct = db.session.get(Account, account_id)
+    if not acct or acct.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("list_accounts"))
+
+    name = request.form.get("name", "").strip()
+    kind = request.form.get("kind", acct.kind)
+    balance_raw = request.form.get("balance", "").strip()
+    color = request.form.get("color", acct.color).strip() or acct.color
+    notes = request.form.get("notes", "").strip()
+    archived = request.form.get("archived") == "on"
+
+    if not name:
+        flash("Name is required.", "danger")
+        return redirect(url_for("list_accounts"))
+
+    try:
+        balance = float(balance_raw)
+    except (TypeError, ValueError):
+        balance = acct.balance
+
+    acct.name = name
+    acct.kind = kind if kind in dict(ACCOUNT_KINDS) else acct.kind
+    acct.balance = balance
+    acct.color = color
+    acct.notes = notes
+    acct.archived = archived
+    db.session.commit()
+    flash(f"Account '{acct.name}' updated.", "success")
+    return redirect(url_for("list_accounts"))
+
+
+@app.route("/accounts/<int:account_id>/delete", methods=["POST"])
+@login_required
+def delete_account(account_id):
+    acct = db.session.get(Account, account_id)
+    if not acct or acct.user_id != current_user.id:
+        flash("Account not found.", "danger")
+        return redirect(url_for("list_accounts"))
+
+    Expense.query.filter_by(account_id=acct.id).update({"account_id": None})
+    RecurringRule.query.filter_by(account_id=acct.id).update({"account_id": None})
+    db.session.delete(acct)
+    db.session.commit()
+    flash("Account deleted. Its transactions were kept.", "info")
+    return redirect(url_for("list_accounts"))
+
+
+@app.route("/accounts/transfer", methods=["POST"])
+@login_required
+def transfer_accounts():
+    form = TransferForm()
+    accounts = (Account.query.filter_by(user_id=current_user.id, archived=False)
+                .order_by(Account.name).all())
+    form.from_account_id.choices = [(a.id, a.name) for a in accounts]
+    form.to_account_id.choices = [(a.id, a.name) for a in accounts]
+
+    if form.validate_on_submit():
+        src_id = form.from_account_id.data
+        dst_id = form.to_account_id.data
+        amount = float(form.amount.data)
+        description = (form.description.data or "").strip() or "Transfer"
+        tdate = form.date.data
+
+        if src_id == dst_id:
+            flash("Cannot transfer to the same account.", "danger")
+            return redirect(url_for("list_accounts"))
+        if amount <= 0:
+            flash("Amount must be positive.", "danger")
+            return redirect(url_for("list_accounts"))
+
+        src = db.session.get(Account, src_id)
+        dst = db.session.get(Account, dst_id)
+        if not src or not dst or src.user_id != current_user.id or dst.user_id != current_user.id:
+            flash("Account not found.", "danger")
+            return redirect(url_for("list_accounts"))
+
+        db.session.add(Expense(
+            user_id=current_user.id, kind="expense",
+            amount=amount, category="Transfer",
+            description=f"→ {dst.name}: {description}",
+            date=tdate, account_id=src.id,
+        ))
+        db.session.add(Expense(
+            user_id=current_user.id, kind="income",
+            amount=amount, category="Transfer",
+            description=f"← {src.name}: {description}",
+            date=tdate, account_id=dst.id,
+        ))
+        db.session.commit()
+
+        recalc_account_balance(src.id)
+        recalc_account_balance(dst.id)
+
+        flash(f"Transferred {amount:.2f} from {src.name} to {dst.name}.", "success")
+    else:
+        flash("Invalid transfer details.", "danger")
+    return redirect(url_for("list_accounts"))
 
 
 # ---------------- CATEGORIES ----------------
@@ -621,7 +842,9 @@ def delete_category(cat_id):
 def list_recurring():
     rules = RecurringRule.query.filter_by(user_id=current_user.id).order_by(RecurringRule.created_at).all()
     categories = Category.query.filter_by(user_id=current_user.id).order_by(Category.name).all()
+    accounts = Account.query.filter_by(user_id=current_user.id, archived=False).order_by(Account.name).all()
     form = RecurringForm()
+    form.account_id.choices = [(0, "— No account —")] + [(a.id, a.name) for a in accounts]
     return render_template("recurring.html", rules=rules, categories=categories, form=form)
 
 
@@ -629,12 +852,15 @@ def list_recurring():
 @login_required
 def add_recurring():
     form = RecurringForm()
+    accounts = Account.query.filter_by(user_id=current_user.id, archived=False).all()
+    form.account_id.choices = [(0, "— No account —")] + [(a.id, a.name) for a in accounts]
     if form.validate_on_submit():
         db.session.add(RecurringRule(
             user_id=current_user.id, kind=form.kind.data, amount=form.amount.data,
             category=form.category.data.strip() or "Other",
             description=(form.description.data or "").strip(),
             day_of_month=form.day_of_month.data,
+            account_id=form.account_id.data or None,
         ))
         db.session.commit()
         flash("Recurring rule added.", "success")
@@ -793,7 +1019,6 @@ def report():
 @login_required
 def settings():
     form = SettingsForm(obj=current_user)
-
     form.language.choices = [(k, v) for k, v in SUPPORTED_LANGUAGES.items()]
     form.currency.choices = [(k, f"{v[1]} {k} — {v[0]}") for k, v in SUPPORTED_CURRENCIES.items()]
     form.base_currency.choices = [(k, f"{v[1]} {k} — {v[0]}") for k, v in SUPPORTED_CURRENCIES.items()]
@@ -816,82 +1041,9 @@ def settings():
     return render_template("settings.html", form=form)
 
 
-# ---------------- LIVE RATES API ----------------
+# ---------------- LIVE RATES ----------------
 
 @app.route("/api/v1/rates")
-# ---------------- EXCHANGE PAGE ----------------
-
-@app.route("/exchange")
-@login_required
-def exchange_page():
-    """Exchange rate board, history chart, and calculator."""
-    base = current_user.base_currency or "USD"
-    display = current_user.currency or "USD"
-
-    # Order of preference in the board: NGN, EUR, GBP, CNY, JPY, then the rest
-    preferred_order = ["NGN", "EUR", "GBP", "CNY", "JPY", "INR", "CAD", "AUD"]
-    all_codes = [c for c in preferred_order if c in SUPPORTED_CURRENCIES]
-    for c in SUPPORTED_CURRENCIES:
-        if c not in all_codes and c != base:
-            all_codes.append(c)
-
-    board = build_rate_board(base, all_codes)
-
-    return render_template(
-        "exchange.html",
-        base=base,
-        display=display,
-        board=board,
-        currencies=SUPPORTED_CURRENCIES,
-    )
-
-
-@app.route("/api/v1/history")
-@login_required
-def api_history():
-    """Return daily historical rates for a currency pair (JSON)."""
-    base = (request.args.get("base") or current_user.base_currency or "USD").upper()
-    target = (request.args.get("target") or "").upper()
-    try:
-        days = int(request.args.get("days", 30))
-    except ValueError:
-        days = 30
-    days = max(7, min(days, 180))
-
-    if not target:
-        return jsonify({"error": "target is required"}), 400
-    if target not in SUPPORTED_CURRENCIES:
-        return jsonify({"error": "unsupported target"}), 400
-
-    series = fetch_history(base, target, days=days)
-    return jsonify({
-        "base": base,
-        "target": target,
-        "days": days,
-        "series": [{"date": d, "rate": r} for d, r in series],
-    })
-
-
-@app.route("/api/v1/convert")
-@login_required
-def api_convert():
-    """Convert an amount between two currencies (JSON)."""
-    try:
-        amount = float(request.args.get("amount", "1"))
-    except ValueError:
-        return jsonify({"error": "invalid amount"}), 400
-
-    from_c = (request.args.get("from") or current_user.base_currency or "USD").upper()
-    to_c = (request.args.get("to") or current_user.currency or "USD").upper()
-
-    converted, rate = convert_currency(amount, from_c, to_c)
-    if converted is None:
-        return jsonify({"error": "could not convert"}), 502
-
-    return jsonify({
-        "amount": amount, "from": from_c, "to": to_c,
-        "rate": rate, "converted": converted,
-    })
 @login_required
 def api_rates():
     base = current_user.base_currency or "USD"
@@ -902,17 +1054,68 @@ def api_rates():
     return jsonify({"base": base, "rates": filtered})
 
 
+# ---------------- EXCHANGE ----------------
+
+@app.route("/exchange")
+@login_required
+def exchange_page():
+    from exchange_rates import build_rate_board
+    base = current_user.base_currency or "USD"
+    preferred_order = ["NGN", "EUR", "GBP", "CNY", "JPY", "INR", "CAD", "AUD"]
+    all_codes = [c for c in preferred_order if c in SUPPORTED_CURRENCIES]
+    for c in SUPPORTED_CURRENCIES:
+        if c not in all_codes and c != base:
+            all_codes.append(c)
+    board = build_rate_board(base, all_codes)
+    return render_template("exchange.html", base=base, board=board,
+                           currencies=SUPPORTED_CURRENCIES)
+
+
+@app.route("/api/v1/history")
+@login_required
+def api_history():
+    from exchange_rates import fetch_history
+    base = (request.args.get("base") or current_user.base_currency or "USD").upper()
+    target = (request.args.get("target") or "").upper()
+    try:
+        days = int(request.args.get("days", 30))
+    except ValueError:
+        days = 30
+    days = max(7, min(days, 180))
+    if not target:
+        return jsonify({"error": "target is required"}), 400
+    if target not in SUPPORTED_CURRENCIES:
+        return jsonify({"error": "unsupported target"}), 400
+    series = fetch_history(base, target, days=days)
+    return jsonify({
+        "base": base, "target": target, "days": days,
+        "series": [{"date": d, "rate": r} for d, r in series],
+    })
+
+
+@app.route("/api/v1/convert")
+@login_required
+def api_convert():
+    try:
+        amount = float(request.args.get("amount", "1"))
+    except ValueError:
+        return jsonify({"error": "invalid amount"}), 400
+    from_c = (request.args.get("from") or current_user.base_currency or "USD").upper()
+    to_c = (request.args.get("to") or current_user.currency or "USD").upper()
+    converted, rate = convert_currency(amount, from_c, to_c)
+    if converted is None:
+        return jsonify({"error": "could not convert"}), 502
+    return jsonify({"amount": amount, "from": from_c, "to": to_c,
+                    "rate": rate, "converted": converted})
+
+
 # ---------------- AI ADVISOR ----------------
 
 @app.route("/ai")
 @login_required
 def ai_page():
-    messages = (
-        AiChat.query
-        .filter_by(user_id=current_user.id)
-        .order_by(AiChat.created_at.asc())
-        .all()
-    )
+    messages = (AiChat.query.filter_by(user_id=current_user.id)
+                .order_by(AiChat.created_at.asc()).all())
     return render_template("ai.html", messages=messages)
 
 
@@ -938,7 +1141,7 @@ def ai_clear():
     return redirect(url_for("ai_page"))
 
 
-# ---------------- API TOKENS (web UI) ----------------
+# ---------------- API TOKENS ----------------
 
 @app.route("/api/tokens", methods=["GET", "POST"])
 @login_required
@@ -952,7 +1155,6 @@ def api_tokens():
         db.session.commit()
         new_token_value = token_value
         flash(f"Token '{name}' created. Copy it below.", "success")
-
     tokens = ApiToken.query.filter_by(user_id=current_user.id).order_by(ApiToken.created_at.desc()).all()
     return render_template("api_tokens.html", tokens=tokens, new_token_value=new_token_value)
 
@@ -977,14 +1179,18 @@ def delete_api_token(token_id):
 def api_me():
     u = g.current_user
     return jsonify({
-        "username": u.username,
-        "email": u.email,
-        "email_alerts": u.email_alerts,
-        "alert_threshold": u.alert_threshold,
-        "language": u.language,
-        "currency": u.currency,
+        "username": u.username, "email": u.email,
+        "email_alerts": u.email_alerts, "alert_threshold": u.alert_threshold,
+        "language": u.language, "currency": u.currency,
         "base_currency": u.base_currency,
     })
+
+
+@app.route("/api/v1/accounts", methods=["GET"])
+@require_token
+def api_accounts():
+    rows = Account.query.filter_by(user_id=g.current_user.id).order_by(Account.name).all()
+    return jsonify([a.to_dict() for a in rows])
 
 
 @app.route("/api/v1/expenses", methods=["GET", "POST"])
@@ -993,8 +1199,7 @@ def api_expenses():
     user = g.current_user
     if request.method == "GET":
         query = Expense.query.filter_by(user_id=user.id)
-        start = request.args.get("start")
-        end = request.args.get("end")
+        start = request.args.get("start"); end = request.args.get("end")
         if start:
             try: query = query.filter(Expense.date >= datetime.strptime(start, "%Y-%m-%d").date())
             except ValueError: pass
@@ -1011,8 +1216,7 @@ def api_expenses():
     data = request.get_json(silent=True) or {}
     try:
         amount = float(data.get("amount"))
-        if amount <= 0:
-            raise ValueError
+        if amount <= 0: raise ValueError
     except (TypeError, ValueError):
         return jsonify({"error": "amount must be a positive number"}), 400
     try:
@@ -1022,15 +1226,21 @@ def api_expenses():
     kind = data.get("kind", "expense")
     if kind not in ("expense", "income"):
         return jsonify({"error": "kind must be expense or income"}), 400
-
+    account_id = data.get("account_id")
+    if account_id:
+        acct = db.session.get(Account, account_id)
+        if not acct or acct.user_id != user.id:
+            return jsonify({"error": "invalid account_id"}), 400
     e = Expense(
         user_id=user.id, kind=kind, amount=amount,
         category=(data.get("category") or "Other").strip(),
         description=(data.get("description") or "").strip(),
-        date=expense_date,
+        date=expense_date, account_id=account_id,
     )
     db.session.add(e)
     db.session.commit()
+    if account_id:
+        recalc_account_balance(account_id)
     check_budget_alerts(user)
     return jsonify(e.to_dict()), 201
 
@@ -1042,16 +1252,16 @@ def api_expense_detail(expense_id):
     e = db.session.get(Expense, expense_id)
     if not e or e.user_id != user.id:
         return jsonify({"error": "not found"}), 404
-
     if request.method == "GET":
         return jsonify(e.to_dict())
-
     if request.method == "DELETE":
-        db.session.delete(e)
-        db.session.commit()
+        account_id = e.account_id
+        db.session.delete(e); db.session.commit()
+        if account_id: recalc_account_balance(account_id)
         return jsonify({"deleted": True, "id": expense_id})
 
     data = request.get_json(silent=True) or {}
+    old_account = e.account_id
     if "kind" in data:
         if data["kind"] not in ("expense", "income"):
             return jsonify({"error": "invalid kind"}), 400
@@ -1071,7 +1281,11 @@ def api_expense_detail(expense_id):
             e.date = datetime.strptime(data["date"], "%Y-%m-%d").date()
         except ValueError:
             return jsonify({"error": "invalid date"}), 400
+    if "account_id" in data:
+        e.account_id = data["account_id"] or None
     db.session.commit()
+    if old_account: recalc_account_balance(old_account)
+    if e.account_id and e.account_id != old_account: recalc_account_balance(e.account_id)
     return jsonify(e.to_dict())
 
 
@@ -1085,8 +1299,7 @@ def api_categories():
 @app.route("/api/v1/summary", methods=["GET"])
 @require_token
 def api_summary():
-    filters = parse_filters()
-    return jsonify(build_summary(g.current_user.id, filters))
+    return jsonify(build_summary(g.current_user.id, parse_filters()))
 
 
 @app.route("/api/v1/ai/chat", methods=["POST"])
@@ -1096,8 +1309,6 @@ def api_ai_chat():
     user_message = (data.get("message") or "").strip()
     if not user_message:
         return jsonify({"error": "empty message"}), 400
-    if len(user_message) > 1000:
-        return jsonify({"error": "message too long"}), 400
     reply = ai_chat(g.current_user.id, user_message)
     return jsonify({"reply": reply})
 

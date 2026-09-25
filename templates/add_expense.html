@@ -36,6 +36,11 @@
                 </div>
 
                 <div class="mb-3">
+                    <label class="form-label">{{ t('account') }} <span class="text-muted">({{ t('optional') }})</span></label>
+                    {{ form.account_id(class="form-select") }}
+                </div>
+
+                <div class="mb-3">
                     <label class="form-label">{{ t('description') }} <span class="text-muted">({{ t('optional') }})</span></label>
                     {{ form.description(class="form-control", maxlength="200") }}
                 </div>

@@ -23,7 +23,11 @@
                 {% for c in categories %}<option value="{{ c.name }}">{% endfor %}
             </datalist>
         </div>
-        <div class="col-md-3">
+        <div class="col-md-2">
+            <label class="form-label small mb-1">{{ t('account') }} <span class="text-muted">({{ t('optional') }})</span></label>
+            {{ form.account_id(class="form-select") }}
+        </div>
+        <div class="col-md-2">
             <label class="form-label small mb-1">{{ t('description') }}</label>
             {{ form.description(class="form-control", maxlength="200") }}
         </div>
@@ -31,7 +35,7 @@
             <label class="form-label small mb-1">{{ t('day') }}</label>
             {{ form.day_of_month(class="form-control", min="1", max="28") }}
         </div>
-        <div class="col-md-2">
+        <div class="col-md-1">
             <button type="submit" class="btn btn-primary w-100">{{ t('add') }}</button>
         </div>
     </form>
@@ -47,9 +51,9 @@
                     <th>{{ t('type') }}</th>
                     <th>{{ t('amount') }}</th>
                     <th>{{ t('category') }}</th>
+                    <th>{{ t('account') }}</th>
                     <th>{{ t('description') }}</th>
                     <th>{{ t('day') }}</th>
-                    <th>{{ t('last_posted') }}</th>
                     <th>{{ t('status') }}</th>
                     <th class="text-end">{{ t('actions') }}</th>
                 </tr>
@@ -61,9 +65,9 @@
                         {% else %}<span class="badge bg-danger">{{ t('expense') }}</span>{% endif %}</td>
                     <td class="fw-bold">{{ r.amount | money }}</td>
                     <td>{{ r.category }}</td>
+                    <td class="text-muted small">{{ r.account.name if r.account else '—' }}</td>
                     <td>{{ r.description or '—' }}</td>
                     <td>{{ r.day_of_month }}</td>
-                    <td>{{ r.last_posted_month or '—' }}</td>
                     <td>{% if r.active %}<span class="badge bg-primary">{{ t('active') }}</span>
                         {% else %}<span class="badge bg-secondary">{{ t('paused') }}</span>{% endif %}</td>
                     <td class="text-end">
@@ -72,7 +76,7 @@
                             <button class="btn btn-sm btn-outline-secondary">{{ '⏸️' if r.active else '▶️' }}</button>
                         </form>
                         <form method="POST" action="{{ url_for('delete_recurring', rule_id=r.id) }}" class="d-inline"
-                              onsubmit="return confirm('{{ t('delete') }}?');">
+                              onsubmit="return confirm('{{ t('confirm_delete') }}');">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button class="btn btn-sm btn-outline-danger">🗑️</button>
                         </form>

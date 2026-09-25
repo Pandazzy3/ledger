@@ -1,11 +1,22 @@
 from flask_wtf import FlaskForm
 from wtforms import (
     StringField, PasswordField, FloatField, DateField,
-    SelectField, IntegerField, BooleanField, SubmitField,
+    SelectField, IntegerField, BooleanField, SubmitField, TextAreaField,
 )
 from wtforms.validators import DataRequired, Email, Length, EqualTo, NumberRange, Optional
 
 from translations import SUPPORTED_LANGUAGES, SUPPORTED_CURRENCIES
+
+
+ACCOUNT_KINDS = [
+    ("bank", "Bank account"),
+    ("savings", "Savings"),
+    ("cash", "Cash"),
+    ("card", "Credit card"),
+    ("wallet", "Digital wallet"),
+    ("investment", "Investment"),
+    ("other", "Other"),
+]
 
 
 class RegisterForm(FlaskForm):
@@ -31,6 +42,7 @@ class ExpenseForm(FlaskForm):
     category = StringField("Category", validators=[DataRequired(), Length(max=50)])
     description = StringField("Description", validators=[Optional(), Length(max=200)])
     date = DateField("Date", validators=[DataRequired()])
+    account_id = SelectField("Account", coerce=int, choices=[], validators=[Optional()])
     submit = SubmitField("Save")
 
 
@@ -50,6 +62,7 @@ class RecurringForm(FlaskForm):
     description = StringField("Description", validators=[Optional(), Length(max=200)])
     day_of_month = IntegerField("Day of month", validators=[DataRequired(), NumberRange(min=1, max=28)],
                                 default=1)
+    account_id = SelectField("Account", coerce=int, choices=[], validators=[Optional()])
     submit = SubmitField("Add Rule")
 
 
@@ -59,6 +72,25 @@ class GoalForm(FlaskForm):
     current_amount = FloatField("Already saved", validators=[Optional(), NumberRange(min=0)], default=0)
     deadline = DateField("Deadline", validators=[Optional()])
     submit = SubmitField("Add Goal")
+
+
+class AccountForm(FlaskForm):
+    name = StringField("Account name", validators=[DataRequired(), Length(max=100)])
+    kind = SelectField("Type", choices=ACCOUNT_KINDS, validators=[DataRequired()])
+    balance = FloatField("Current balance", validators=[DataRequired()])
+    currency = SelectField("Currency", choices=[], validators=[DataRequired()])
+    color = StringField("Color", validators=[Optional(), Length(max=20)], default="#4f46e5")
+    notes = TextAreaField("Notes", validators=[Optional(), Length(max=300)])
+    submit = SubmitField("Save")
+
+
+class TransferForm(FlaskForm):
+    from_account_id = SelectField("From", coerce=int, choices=[], validators=[DataRequired()])
+    to_account_id = SelectField("To", coerce=int, choices=[], validators=[DataRequired()])
+    amount = FloatField("Amount", validators=[DataRequired(), NumberRange(min=0.01)])
+    description = StringField("Description", validators=[Optional(), Length(max=200)])
+    date = DateField("Date", validators=[DataRequired()])
+    submit = SubmitField("Transfer")
 
 
 class SettingsForm(FlaskForm):
